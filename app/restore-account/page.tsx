@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { purgeDate } from "@/lib/trash";
-import { restoreAccount, signOutAction } from "@/app/actions";
+import { restoreAccount } from "@/app/actions";
+import { SignOutButton } from "@/components/sign-out-button";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Account scheduled for deletion" };
@@ -24,7 +25,7 @@ export default async function RestoreAccount() {
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <form action={restoreAccount}><button className="btn-primary">Restore my account</button></form>
-          <form action={signOutAction}><button className="btn-ghost">Keep it deleted</button></form>
+          <SignOutButton className="btn-ghost">Keep it deleted</SignOutButton>
         </div>
       </div>
     </main>

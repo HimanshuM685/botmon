@@ -7,6 +7,7 @@ import type { DeepPartial } from "ai";
 import { toast } from "sonner";
 import { adviceSchema, analysisSchema, type Analysis } from "@/lib/ai/schema";
 import { trashItem } from "@/app/actions";
+import { ConfirmButton } from "./confirm-button";
 
 type Saved = { id: string; createdAt: string; model: string; mode: string; result: Analysis };
 /** "none": no read yet; "update": new messages since the last read; "current": nothing new; "changed": chat replaced since. */
@@ -117,18 +118,20 @@ export function AnalysisView({ personId, history, canRun, state, advice }: {
           </select>
         )}
         {!isLoading && !waitingForRefresh && (selected ?? latest?.id) && (
-          <button
+          <ConfirmButton
             className="text-sm text-muted underline-offset-4 hover:text-heart hover:underline"
-            onClick={async () => {
-              const r = await trashItem("analysis", (selected ?? latest!.id)!);
-              if (r?.error) return toast.error(r.error);
-              toast.success("Read moved to trash. Restore it from Trash within 30 days.");
+            action={() => trashItem("analysis", (selected ?? latest!.id)!)}
+            title="Delete this read?"
+            description="It moves to the trash; restore it from Trash within 30 days. Facts it added to the timeline stay."
+            confirmLabel="Move to trash"
+            onDone={() => {
+              toast.success("Read moved to trash");
               setSelected(null);
               router.refresh();
             }}
           >
             Delete read
-          </button>
+          </ConfirmButton>
         )}
         {isLoading ? (
           <button className="btn-ghost" onClick={stop}>Stop</button>

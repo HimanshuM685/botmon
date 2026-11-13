@@ -4,6 +4,7 @@ import { useActionState, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { saveFact, trashItem, type ActionState } from "@/app/actions";
+import { ConfirmButton } from "./confirm-button";
 
 type Fact = { id: string; kind: string; text: string; source: string; happenedAt: string | null; createdAt: string };
 
@@ -69,17 +70,19 @@ export function Timeline({ personId, personName, facts }: { personId: string; pe
 function DeleteFact({ id }: { id: string }) {
   const router = useRouter();
   return (
-    <button
+    <ConfirmButton
       className="text-xs text-muted hover:text-heart"
-      onClick={async () => {
-        const r = await trashItem("fact", id);
-        if (r?.error) return toast.error(r.error);
+      action={() => trashItem("fact", id)}
+      title="Delete this from the timeline?"
+      description="It moves to the trash for 30 days. Reads and the coach won't add it back, even if it comes up again."
+      confirmLabel="Move to trash"
+      onDone={() => {
         toast.success("Moved to trash");
         router.refresh();
       }}
     >
       Delete
-    </button>
+    </ConfirmButton>
   );
 }
 

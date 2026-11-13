@@ -15,11 +15,6 @@ import { RELATIONS } from "@/lib/ai/prompt";
 
 export type ActionState = { error?: string; ok?: boolean } | undefined;
 
-export async function signOutAction() {
-  await auth.signOut();
-  redirect("/");
-}
-
 const personSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(60),
   relation: z.enum(Object.keys(RELATIONS) as [keyof typeof RELATIONS, ...(keyof typeof RELATIONS)[]]),
@@ -46,10 +41,12 @@ export async function savePerson(_: ActionState, form: FormData): Promise<Action
   redirect(`/people/${person.id}`);
 }
 
-export async function deletePerson(id: string) {
+export async function deletePerson(id: string): Promise<ActionState> {
   const user = await requireUser();
-  await db.person.updateMany({ where: { id, userId: user.id, ...alive }, data: { deletedAt: new Date() } });
-  redirect("/dashboard");
+  const res = await db.person.updateMany({ where: { id, userId: user.id, ...alive }, data: { deletedAt: new Date() } });
+  if (!res.count) return { error: "Not found" };
+  revalidatePath("/", "layout");
+  return { ok: true }; // the client navigates (components/delete-person-button.tsx)
 }
 
 const providerSchema = z.enum(PROVIDER_IDS as [ProviderId, ...ProviderId[]]);
@@ -107,7 +104,7 @@ export async function setDefaultProvider(input: ProviderId) {
   revalidatePath("/settings");
 }
 
-export async function deleteAccount() {
+export async function deleteAccount(): Promise<ActionState> {
   const user = await requireUser();
   // 30-day grace: hide everything now; lib/purge.ts erases the account (app data + Neon Auth identity) later.
   // AI keys are secrets, not user data: they go immediately, as the privacy page promises.
@@ -115,8 +112,9 @@ export async function deleteAccount() {
     db.apiKey.deleteMany({ where: { userId: user.id } }),
     db.user.update({ where: { id: user.id }, data: { deletedAt: new Date(), defaultProvider: null } }),
   ]);
+  // End the session on the server too, so the account is signed out even if the client step never runs.
   await auth.signOut();
-  redirect("/");
+  return { ok: true }; // the client then clears its cached session cookie and reloads (signOutAndReload)
 }
 
 /* ---------- 30-day trash ---------- */
@@ -158,7 +156,7 @@ function setDeleted(kind: TrashKind, id: string, deletedAt: Date | null) {
   return kind === "person" ? db.person.update(args) : children[kind].update(args);
 }
 
-/** Move one item to the trash. People use deletePerson (it redirects). */
+/** Move one item to the trash. People use deletePerson. */
 export async function trashItem(kindInput: string, id: string): Promise<ActionState> {
   const user = await requireUser();
   const kind = trashKind.safeParse(kindInput);

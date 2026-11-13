@@ -2,11 +2,11 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { toast } from "sonner";
 import { renameThread, trashItem } from "@/app/actions";
+import { ConfirmButton } from "./confirm-button";
 
 type Thread = { id: string; title: string; updatedAt: string };
 
@@ -28,9 +28,15 @@ function errorText(e: Error) {
 export function CoachChat({ personId, personName, threadId, initialMessages, threads, canChat }: {
   personId: string; personName: string; threadId: string | null; initialMessages: UIMessage[]; threads: Thread[]; canChat: boolean;
 }) {
-  const router = useRouter();
   const [current, setCurrent] = useState(threadId);
   const [list, setList] = useState(threads);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  // Rename is finished (saved or cancelled); stops the unmount blur from submitting again.
+  const renameSettled = useRef(false);
+  const startRename = (id: string) => {
+    renameSettled.current = false;
+    setRenaming(id);
+  };
   const lastSent = useRef("");
   const [input, setInput] = useState("");
   const base = `/people/${personId}/coach`;
@@ -55,7 +61,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
       }),
   );
 
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, setMessages, status, stop, error } = useChat({
     id: threadId ?? undefined,
     messages: initialMessages,
     transport,
@@ -80,36 +86,67 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
         <ul className="space-y-1">
           {list.map((t) => (
             <li key={t.id} className="group flex items-center gap-1">
-              <Link
-                href={`${base}?t=${t.id}`}
-                className={`min-w-0 flex-1 truncate rounded-xl px-3 py-2 text-sm transition ${t.id === current ? "bg-ink-3 text-paper" : "text-muted hover:bg-ink-2 hover:text-paper"}`}
-              >
-                {t.title}
-              </Link>
+              {renaming === t.id ? (
+                <form
+                  className="min-w-0 flex-1"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (renameSettled.current) return;
+                    renameSettled.current = true;
+                    const title = String(new FormData(e.currentTarget).get("title") ?? "").trim();
+                    setRenaming(null);
+                    if (!title || title === t.title) return;
+                    const r = await renameThread(t.id, title);
+                    if (r?.error) toast.error(r.error);
+                    else setList((l) => l.map((x) => (x.id === t.id ? { ...x, title: title.slice(0, 80) } : x)));
+                  }}
+                >
+                  <input
+                    name="title" defaultValue={t.title} maxLength={80} autoFocus aria-label="Conversation name"
+                    onKeyDown={(e) => {
+                      if (e.key !== "Escape") return;
+                      renameSettled.current = true; // cancel: the blur from unmounting must not save
+                      setRenaming(null);
+                    }}
+                    onBlur={(e) => !renameSettled.current && e.currentTarget.form?.requestSubmit()}
+                    className="input h-9 px-3"
+                  />
+                </form>
+              ) : (
+                <Link
+                  href={`${base}?t=${t.id}`}
+                  className={`min-w-0 flex-1 truncate rounded-xl px-3 py-2 text-sm transition ${t.id === current ? "bg-ink-3 text-paper" : "text-muted hover:bg-ink-2 hover:text-paper"}`}
+                >
+                  {t.title}
+                </Link>
+              )}
               <button
-                aria-label={`Rename ${t.title}`} className="hidden px-1 text-xs text-dim hover:text-paper group-hover:block"
-                onClick={async () => {
-                  const title = window.prompt("Rename conversation", t.title);
-                  if (!title) return;
-                  const r = await renameThread(t.id, title);
-                  if (r?.error) toast.error(r.error);
-                  else setList((l) => l.map((x) => (x.id === t.id ? { ...x, title: title.trim().slice(0, 80) } : x)));
-                }}
+                aria-label={`Rename ${t.title}`} className="px-1 text-xs text-dim hover:text-paper sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+                onClick={() => startRename(t.id)}
               >
                 ✎
               </button>
-              <button
-                aria-label={`Delete ${t.title}`} className="hidden px-1 text-xs text-dim hover:text-heart group-hover:block"
-                onClick={async () => {
-                  const r = await trashItem("thread", t.id);
-                  if (r?.error) return toast.error(r.error);
-                  toast.success("Moved to trash. Restore it from Trash within 30 days.");
-                  router.push(base);
-                  router.refresh();
+              <ConfirmButton
+                ariaLabel={`Delete ${t.title}`}
+                className="px-1 text-xs text-dim hover:text-heart sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+                action={() => trashItem("thread", t.id)}
+                title="Delete this conversation?"
+                description={<>&ldquo;{t.title}&rdquo; moves to the trash; restore it from Trash within 30 days. Facts it saved to the timeline stay.</>}
+                confirmLabel="Move to trash"
+                onDone={() => {
+                  toast.success("Conversation moved to trash");
+                  setList((l) => l.filter((x) => x.id !== t.id));
+                  if (t.id === current) {
+                    // Deleted the open conversation: start fresh so the next message can't go to a trashed thread.
+                    stop();
+                    setCurrent(null);
+                    setMessages([]);
+                    window.history.replaceState(null, "", base);
+                  }
                 }}
               >
                 ✕
-              </button>
+              </ConfirmButton>
             </li>
           ))}
         </ul>

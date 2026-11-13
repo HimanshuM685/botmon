@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth/server";
-import { signOutAction } from "@/app/actions";
+import { SignOutButton } from "@/components/sign-out-button";
 
 // Session is read from cookies on every request.
 export const dynamic = "force-dynamic";
@@ -18,9 +18,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/trash" className="text-sm text-muted hover:text-paper">Trash</Link>
           <div className="ml-auto flex items-center gap-3">
             {user.image && <Image src={user.image} alt="" width={28} height={28} className="rounded-full" />}
-            <form action={signOutAction}>
-              <button className="text-sm text-muted hover:text-paper">Sign out</button>
-            </form>
+            <SignOutButton />
           </div>
         </nav>
       </header>

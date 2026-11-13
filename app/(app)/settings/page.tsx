@@ -1,7 +1,8 @@
 import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { PROVIDERS } from "@/lib/ai/models";
-import { deleteAccount, deleteKey, setDefaultProvider } from "@/app/actions";
+import { deleteKey, setDefaultProvider } from "@/app/actions";
+import { DeleteAccountButton } from "@/components/delete-account-button";
 import { KeyForm } from "@/components/key-form";
 import { ConfirmButton } from "@/components/confirm-button";
 
@@ -38,9 +39,14 @@ export default async function Settings() {
                     <button className="btn-ghost h-9 px-4">Use this</button>
                   </form>
                 )}
-                <form action={deleteKey.bind(null, k.provider)}>
-                  <button className="btn-danger h-9 px-4">Remove</button>
-                </form>
+                <ConfirmButton
+                  action={deleteKey.bind(null, k.provider)}
+                  title={`Remove your ${PROVIDERS[k.provider].label} key?`}
+                  description="The key is deleted right away and can't be restored (keys never go to the trash). You can paste it again any time."
+                  confirmLabel="Remove key"
+                >
+                  Remove
+                </ConfirmButton>
               </li>
             ))}
           </ul>
@@ -59,7 +65,7 @@ export default async function Settings() {
         </div>
         <div className="card flex flex-wrap items-center gap-4 border-heart/30 p-6">
           <p className="flex-1 text-sm text-muted">Delete your account and everything in it. You have 30 days to change your mind (sign in and restore); after that it&apos;s erased for good.</p>
-          <ConfirmButton action={deleteAccount} confirm="Delete your account? Everything is hidden now and permanently erased after 30 days unless you sign in and restore it.">Delete account</ConfirmButton>
+          <DeleteAccountButton />
         </div>
       </section>
     </div>

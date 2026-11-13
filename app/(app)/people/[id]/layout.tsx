@@ -2,8 +2,7 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { getPerson } from "@/lib/data";
 import { RELATIONS } from "@/lib/labels";
-import { deletePerson } from "@/app/actions";
-import { ConfirmButton } from "@/components/confirm-button";
+import { DeletePersonButton } from "@/components/delete-person-button";
 import { EditPerson } from "@/components/edit-person";
 import { PersonTabs } from "@/components/person-tabs";
 
@@ -20,13 +19,7 @@ export default async function PersonLayout({ children, params }: LayoutProps<"/p
           <h1 className="display mt-3 text-5xl">{person.name}</h1>
         </div>
         <EditPerson person={person} />
-        <ConfirmButton
-          action={deletePerson.bind(null, person.id)}
-          confirm={`Move ${person.name} to the trash? You can restore them (with all chats, reads and coach conversations) for 30 days.`}
-          className="btn-danger h-9 px-4"
-        >
-          Delete
-        </ConfirmButton>
+        <DeletePersonButton id={person.id} name={person.name} />
       </header>
       <PersonTabs id={person.id} />
       {children}
