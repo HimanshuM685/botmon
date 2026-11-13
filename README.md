@@ -10,7 +10,7 @@ Upload a WhatsApp or Instagram chat with someone you care about (crush, girlfrie
 - Detailed read: status + trend, personality with evidence, love languages, mood/triggers, interests, key facts, important dates, open threads, relationship phases, conflicts, your strengths/blind spots, next moves, messages to send
 - Coach chat per person: "this happened, what now?" answered with the chat, latest read and timeline; it can search the full chat and saves new facts to the timeline. Every message is stored.
 - Timeline (long-term memory) per person: filled by reads and the coach, editable by you, used in every read and chat
-- 30-day trash for everything (people, chats, reads, coach conversations, timeline items, the account); restore any time, then erased by a daily purge
+- 30-day trash for everything (people, chats, reads, coach conversations, timeline items, the account); restore any time, then erased when you run `npm run purge`
 - Analysis streams in live; history kept per person
 - Export / delete everything from Settings
 
@@ -44,7 +44,7 @@ Google sign-in uses Neon's shared development credentials out of the box; localh
    Migrations run on deploy (`vercel-build` runs `prisma migrate deploy`).
 4. Custom SMTP for auth emails if you add email sign-in later: https://neon.com/docs/auth/production-checklist.md
 
-Trash purge: set `CRON_SECRET` in the site env. `netlify/functions/purge.mts` runs daily and calls `/api/cron/purge` with it (any scheduler can call that endpoint with `Authorization: Bearer $CRON_SECRET`).
+Trash purge: deleted items stay 30 days; nothing is erased automatically. Run `npm run purge` (uses `.env`, add `-- --dry-run` to preview) to permanently erase everything past the window, including Neon Auth identities of deleted accounts.
 
 **Never change or lose `ENCRYPTION_KEY`** — stored chats and API keys become unreadable.
 

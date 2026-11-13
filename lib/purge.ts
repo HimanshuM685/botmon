@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "./db";
 import { purgeCutoff } from "./trash";
 
-/** Permanently delete everything that has been in the trash for more than 30 days (daily cron). */
+/** Permanently delete everything that has been in the trash for more than 30 days (run by hand: `npm run purge`). */
 export async function purgeExpired({ now = Date.now() }: { now?: number } = {}) {
   const old = { lt: purgeCutoff(now) };
 

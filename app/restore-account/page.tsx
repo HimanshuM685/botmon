@@ -18,9 +18,9 @@ export default async function RestoreAccount() {
       <div className="card w-full p-8 text-center">
         <h1 className="display text-3xl">Your account is scheduled for deletion.</h1>
         <p className="mt-4 text-muted">
-          Everything will be permanently erased on{" "}
+          You can bring it all back until{" "}
           <strong className="text-paper">{purgeDate(row.deletedAt).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>.
-          Until then you can bring it all back.
+          After that it will be permanently erased.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <form action={restoreAccount}><button className="btn-primary">Restore my account</button></form>

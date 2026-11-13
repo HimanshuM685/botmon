@@ -9,7 +9,7 @@ type Row = { kind: "person" | "chat" | "analysis" | "thread" | "fact"; id: strin
 
 export default async function Trash() {
   const user = await requireUser();
-  // Past-window items wait for the daily purge; just don't list them.
+  // Past-window items wait for the next `npm run purge`; just don't list them.
   const deleted = { not: null, gte: purgeCutoff() };
   const mine = { person: { userId: user.id } };
   const [people, chats, analyses, threads, facts] = await Promise.all([

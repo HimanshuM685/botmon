@@ -59,7 +59,7 @@ export default async function Settings() {
         </div>
         <div className="card flex flex-wrap items-center gap-4 border-heart/30 p-6">
           <p className="flex-1 text-sm text-muted">Delete your account and everything in it. You have 30 days to change your mind (sign in and restore); after that it&apos;s erased for good.</p>
-          <ConfirmButton action={deleteAccount} confirm="Delete your account? Everything is hidden now and permanently erased in 30 days unless you sign in and restore it.">Delete account</ConfirmButton>
+          <ConfirmButton action={deleteAccount} confirm="Delete your account? Everything is hidden now and permanently erased after 30 days unless you sign in and restore it.">Delete account</ConfirmButton>
         </div>
       </section>
     </div>
