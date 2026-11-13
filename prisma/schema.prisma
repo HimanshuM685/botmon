@@ -103,6 +103,11 @@ model Analysis {
   model     String
   /// null while running or if the run failed; every row counts toward the hourly limit
   result    Json?
+  /// Chat this read was based on and the last message it covered; the next run only sends newer messages
+  chatId    String?
+  throughAt DateTime?
+  /// "full" or "incremental"
+  mode      String    @default("full")
   createdAt DateTime @default(now())
   person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
 

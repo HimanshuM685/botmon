@@ -2,7 +2,8 @@ import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { getActiveKey, getChatStats, getPerson, loadChat } from "@/lib/data";
-import { analysisSchema } from "@/lib/ai/schema";
+import { analysisSchema, type Analysis } from "@/lib/ai/schema";
+import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
@@ -10,7 +11,7 @@ import { CHAR_BUDGET } from "@/lib/ai/models";
 export const maxDuration = 300;
 const HOURLY_LIMIT = 10;
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const userId = await getUserId();
   if (!userId) return Response.json({ error: "Not signed in" }, { status: 401 });
   const person = await getPerson(userId, (await params).id);
@@ -23,9 +24,23 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
   if (!chat) return Response.json({ error: "Upload a chat first" }, { status: 400 });
 
+  // Incremental by default: reuse the last read of this chat and send only messages after it.
+  const full = ((await req.json().catch(() => null)) as { mode?: string } | null)?.mode === "full";
+  const prev = full
+    ? null
+    : await db.analysis.findFirst({
+        where: { personId: person.id, chatId: chat.id, result: { not: Prisma.DbNull }, throughAt: { not: null } },
+        orderBy: { createdAt: "desc" },
+      });
+  if (prev && chat.lastAt <= prev.throughAt!)
+    return Response.json({ error: "Already up to date with this chat. Add a newer export, or run a full re-read." }, { status: 409 });
+  const mode = prev ? "incremental" : "full";
+
   // Record the attempt first, then count: concurrent requests all see each other's rows,
   // and failed or aborted runs still count toward the limit.
-  const run = await db.analysis.create({ data: { personId: person.id, provider: key.provider, model: key.model } });
+  const run = await db.analysis.create({
+    data: { personId: person.id, provider: key.provider, model: key.model, chatId: chat.id, throughAt: chat.lastAt, mode },
+  });
   const recent = await db.analysis.count({ where: { person: { userId }, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
   if (recent > HOURLY_LIMIT) {
     await db.analysis.delete({ where: { id: run.id } });
@@ -44,7 +59,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     tzOffsetMin: chat.tzOffset,
     msgs,
     budget: CHAR_BUDGET[key.provider],
+    previous: prev ? { result: prev.result as unknown as Analysis, throughAt: prev.throughAt!.getTime() } : undefined,
   });
+  const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
 
   const result = streamText({
     model: getModel(key.provider, key.apiKey, key.model),
@@ -91,5 +108,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     },
     cancel: () => void parts.return?.(),
   });
-  return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+  return new Response(body, {
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-read-mode": mode, "x-read-messages": String(newMessages) },
+  });
 }

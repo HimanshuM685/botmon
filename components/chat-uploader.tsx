@@ -5,8 +5,13 @@ import { useRouter } from "next/navigation";
 import { gzipSync, strToU8 } from "fflate";
 import { toast } from "sonner";
 import { parseFiles, parseWhatsApp, type ParsedChat } from "@/lib/parsers";
+import { trimToNew } from "@/lib/merge";
 
-export function ChatUploader({ personId, personName, hasChat }: { personId: string; personName: string; hasChat: boolean }) {
+type Existing = { myName: string; theirName: string; lastAt: number } | null;
+const fmt = (ts: number) => new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+
+export function ChatUploader({ personId, personName, existing }: { personId: string; personName: string; existing: Existing }) {
+  const hasChat = !!existing;
   const [open, setOpen] = useState(!hasChat);
   const [chat, setChat] = useState<ParsedChat | null>(null);
   const [me, setMe] = useState("");
@@ -18,10 +23,12 @@ export function ChatUploader({ personId, personName, hasChat }: { personId: stri
   const router = useRouter();
 
   function accept(c: ParsedChat) {
-    if (c.messages.length < 10) return toast.error("Couldn't find enough messages in that file.");
+    if (!c.messages.length) return toast.error("Couldn't find any messages in that file.");
     setChat(c);
-    // Guess "me" as the sender whose name doesn't look like the person's name.
-    const guess = c.senders.find((s) => !s.toLowerCase().includes(personName.toLowerCase().split(" ")[0])) ?? c.senders[1] ?? c.senders[0];
+    // Same chat as before? Reuse who "me" was. Otherwise guess the sender whose name doesn't look like the person's.
+    const guess =
+      (existing && c.senders.includes(existing.myName) ? existing.myName : undefined) ??
+      c.senders.find((s) => !s.toLowerCase().includes(personName.toLowerCase().split(" ")[0])) ?? c.senders[1] ?? c.senders[0];
     setMe(guess);
   }
 
@@ -39,15 +46,21 @@ export function ChatUploader({ personId, personName, hasChat }: { personId: stri
     // Group chats: keep only you and the most active other person.
     const theirName = chat.senders.find((s) => s !== me);
     if (!theirName) return toast.error(`This chat only has messages from ${me}. Export a chat with both of you in it.`);
-    const messages = chat.messages.filter((m) => m.sender === me || m.sender === theirName);
-    if (messages.length < 10) return toast.error(`Only ${messages.length} messages between you and ${theirName}. Need at least 10.`);
+    const pair = chat.messages.filter((m) => m.sender === me || m.sender === theirName);
+    const sameChat = existing?.myName === me && existing?.theirName === theirName;
+    if (!sameChat && pair.length < 10) return toast.error(`Only ${pair.length} messages between you and ${theirName}. Need at least 10.`);
+    // Re-export of a chat we already have: only send what can be new (plus a day of overlap for exact de-dupe).
+    const messages = sameChat ? trimToNew(pair, existing.lastAt) : pair;
+    if (sameChat && !messages.length) return toast.info(`Nothing new. You already have everything up to ${fmt(existing.lastAt)}.`);
     setBusy(true);
     try {
       const body = gzipSync(strToU8(JSON.stringify({ source: chat.source, myName: me, theirName, messages, tzOffset: new Date().getTimezoneOffset() })));
       const res = await fetch(`/api/people/${personId}/chat`, { method: "POST", body, headers: { "content-type": "application/octet-stream" } });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
-      toast.success(`${json.msgCount.toLocaleString()} messages saved`);
+      if (json.mode !== "merged") toast.success(`${json.msgCount.toLocaleString()} messages saved`);
+      else if (json.added) toast.success(`Added ${json.added.toLocaleString()} new messages (${fmt(json.from)} – ${fmt(json.to)}). Older ones were already saved.`);
+      else toast.info(`Nothing new. You already have everything up to ${fmt(existing!.lastAt)}.`);
       setChat(null);
       setOpen(false);
       router.refresh();
@@ -59,11 +72,16 @@ export function ChatUploader({ personId, personName, hasChat }: { personId: stri
   }
 
   if (!open)
-    return <button className="btn-ghost h-9 px-4" onClick={() => setOpen(true)}>Replace chat</button>;
+    return <button className="btn-ghost h-9 px-4" onClick={() => setOpen(true)}>Add newer export</button>;
 
   return (
     <section className="card p-6 sm:p-8">
-      <h2 className="display text-2xl">{hasChat ? "Replace chat" : "Add your chat"}</h2>
+      <h2 className="display text-2xl">{hasChat ? "Add a newer export" : "Add your chat"}</h2>
+      {existing && (
+        <p className="mt-2 text-sm text-muted">
+          You have messages up to <strong className="text-paper">{fmt(existing.lastAt)}</strong>. Drop a fresh export of the same chat and only newer messages get added. A chat with different people replaces it.
+        </p>
+      )}
 
       {!chat ? (
         <>

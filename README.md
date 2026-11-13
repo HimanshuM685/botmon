@@ -5,6 +5,8 @@ Upload a WhatsApp or Instagram chat with someone you care about (crush, girlfrie
 - Google sign-in via Neon Auth, up to 3 people per user
 - Bring your own key: Gemini (free from AI Studio), OpenAI or NVIDIA NIM
 - Chats are parsed in the browser, then stored gzipped + AES-256-GCM encrypted in Postgres
+- Re-upload a newer export of the same chat: only messages after what's stored are sent and added (exact de-dupe on the overlap)
+- Re-analysis is incremental: the previous read plus only new messages go to the model; "Full re-read" redoes everything
 - Analysis streams in live; history kept per person
 - Export / delete everything from Settings
 

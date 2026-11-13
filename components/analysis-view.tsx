@@ -7,7 +7,9 @@ import type { DeepPartial } from "ai";
 import { toast } from "sonner";
 import { analysisSchema, type Analysis } from "@/lib/ai/schema";
 
-type Saved = { id: string; createdAt: string; model: string; result: Analysis };
+type Saved = { id: string; createdAt: string; model: string; mode: string; result: Analysis };
+/** "none": no read yet; "update": new messages since the last read; "current": nothing new; "changed": chat replaced since. */
+export type ReadState = "none" | "update" | "current" | "changed";
 
 function errorText(e: Error) {
   try {
@@ -17,7 +19,7 @@ function errorText(e: Error) {
   }
 }
 
-export function AnalysisView({ personId, history, canRun }: { personId: string; history: Saved[]; canRun: boolean }) {
+export function AnalysisView({ personId, history, canRun, state }: { personId: string; history: Saved[]; canRun: boolean; state: ReadState }) {
   const router = useRouter();
   // null = follow the newest saved analysis
   const [selected, setSelected] = useState<string | null>(null);
@@ -26,6 +28,13 @@ export function AnalysisView({ personId, history, canRun }: { personId: string; 
   const { object, submit, isLoading, stop, clear } = useObject({
     api: `/api/people/${personId}/analyze`,
     schema: analysisSchema,
+    fetch: async (input, init) => {
+      const res = await fetch(input, init);
+      const n = Number(res.headers.get("x-read-messages") ?? 0);
+      if (res.ok && res.headers.get("x-read-mode") === "incremental")
+        toast.info(`Updating your last read with ${n.toLocaleString()} new message${n === 1 ? "" : "s"} only.`);
+      return res;
+    },
     onError: (e) => {
       toast.error(errorText(e));
       clear();
@@ -39,10 +48,10 @@ export function AnalysisView({ personId, history, canRun }: { personId: string; 
     },
   });
 
-  function run() {
+  function run(mode: "auto" | "full") {
     setSelected(null);
     setBaseline(history[0]?.id);
-    submit({});
+    submit({ mode });
   }
 
   const latest = history[0];
@@ -56,15 +65,22 @@ export function AnalysisView({ personId, history, canRun }: { personId: string; 
         <h2 className="display mr-auto text-3xl">The read</h2>
         {history.length > 1 && !isLoading && (
           <select aria-label="Past analyses" className="input h-9 w-auto" value={selected ?? latest?.id} onChange={(e) => setSelected(e.target.value === latest?.id ? null : e.target.value)}>
-            {history.map((h) => <option key={h.id} value={h.id}>{new Date(h.createdAt).toLocaleString()}</option>)}
+            {history.map((h) => <option key={h.id} value={h.id}>{new Date(h.createdAt).toLocaleString()}{h.mode === "incremental" ? " · update" : ""}</option>)}
           </select>
         )}
         {isLoading ? (
           <button className="btn-ghost" onClick={stop}>Stop</button>
         ) : (
-          <button className="btn-primary" disabled={!canRun} onClick={run}>
-            {history.length ? "Run fresh analysis" : "Analyze chat"}
-          </button>
+          <>
+            {state !== "none" && (
+              <button className="text-sm text-muted underline-offset-4 hover:text-paper hover:underline disabled:opacity-50" disabled={!canRun} onClick={() => run("full")}>
+                Full re-read
+              </button>
+            )}
+            <button className="btn-primary" disabled={!canRun || state === "current"} onClick={() => run("auto")}>
+              {state === "update" ? "Update with new messages" : state === "current" ? "Up to date" : "Analyze chat"}
+            </button>
+          </>
         )}
       </div>
 

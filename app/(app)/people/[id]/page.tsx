@@ -7,7 +7,7 @@ import { activityWindows } from "@/lib/stats";
 import { RELATIONS } from "@/lib/labels";
 import { deletePerson } from "@/app/actions";
 import { ChatUploader } from "@/components/chat-uploader";
-import { AnalysisView } from "@/components/analysis-view";
+import { AnalysisView, type ReadState } from "@/components/analysis-view";
 import { ConfirmButton } from "@/components/confirm-button";
 import { EditPerson } from "@/components/edit-person";
 import type { Analysis } from "@/lib/ai/schema";
@@ -24,6 +24,12 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   ]);
   const stats = chat ? await getChatStats(chat) : null;
   const recent = stats ? activityWindows(stats) : null;
+  const last = analyses[0];
+  const readState: ReadState = !last || !chat
+    ? "none"
+    : last.chatId !== chat.id || !last.throughAt
+      ? "changed"
+      : chat.lastAt > last.throughAt ? "update" : "current";
   const pronoun = person.gender === "FEMALE" ? "She" : person.gender === "MALE" ? "He" : "They";
 
   return (
@@ -46,7 +52,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
               {chat.source === "INSTAGRAM" ? "Instagram" : "WhatsApp"} chat · {chat.msgCount.toLocaleString()} messages ·{" "}
               {chat.firstAt.toLocaleDateString()} – {chat.lastAt.toLocaleDateString()}
             </p>
-            <ChatUploader personId={person.id} personName={person.name} hasChat />
+            <ChatUploader personId={person.id} personName={person.name} existing={{ myName: chat.myName, theirName: chat.theirName, lastAt: chat.lastAt.getTime() }} />
           </div>
           <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-3xl border border-line bg-line sm:grid-cols-4">
             <Stat label={`${pronoun} starts`} value={`${stats.theyInitiatePct}%`} hint="of conversations" />
@@ -60,14 +66,15 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
           </dl>
         </section>
       )}
-      {!chat && <ChatUploader personId={person.id} personName={person.name} hasChat={false} />}
+      {!chat && <ChatUploader personId={person.id} personName={person.name} existing={null} />}
 
       {!keyCount && <p className="card p-5 text-sm text-amber">Add an AI key in Settings to run analyses.</p>}
 
       <AnalysisView
         personId={person.id}
+        state={readState}
         canRun={!!chat && keyCount > 0}
-        history={analyses.map((a) => ({ id: a.id, createdAt: a.createdAt.toISOString(), model: a.model, result: a.result as Analysis }))}
+        history={analyses.map((a) => ({ id: a.id, createdAt: a.createdAt.toISOString(), model: a.model, mode: a.mode, result: a.result as Analysis }))}
       />
     </div>
   );
