@@ -1,5 +1,5 @@
 import type { Msg } from "@/lib/parsers/types";
-import type { Analysis } from "./schema";
+import { ADVICE_KEYS, type Analysis } from "./schema";
 import { factsForPrompt } from "@/lib/facts";
 import { activityWindows, isThinChat, toLocal, type ChatStats } from "@/lib/stats";
 
@@ -59,6 +59,64 @@ export function fitToBudget(msgs: Msg[], budget: number, tzOffsetMin = 0) {
   return { lines: out.reverse(), trimmed: msgs.length - out.length };
 }
 
+type HeaderInput = {
+  personName: string;
+  relation: RelationId;
+  gender: string;
+  notes: string | null;
+  myName: string;
+  theirName: string;
+  stats: ChatStats;
+  tzOffsetMin: number;
+  now?: number;
+  facts?: { kind: string; text: string; happenedAt: Date | null }[];
+};
+
+/** Who is who, the user's notes, memory and exact stats. Shared by full reads and advice refreshes. */
+function header(p: HeaderInput) {
+  const s = p.stats;
+  const w = activityWindows(s, p.now);
+  const today = toLocal(p.now ?? Date.now(), p.tzOffsetMin).toISOString().slice(0, 10);
+  return `The user is "${p.myName}" in the chat. The other person is "${p.theirName}" (${p.personName}), the user's ${RELATIONS[p.relation].toLowerCase()} (${p.gender.toLowerCase()}).
+Focus: ${FOCUS[p.relation]}
+${p.notes ? `Context from the user: ${p.notes}\n` : ""}
+${p.facts?.length ? `What is already known about them (memory from earlier reads, the coach and the user):\n${factsForPrompt(p.facts)}\n\n` : ""}Computed stats (exact, trust these over your own counting):
+- ${s.total} messages over ${s.days} days. User sent ${s.mine}, they sent ${s.theirs}.
+- They start ${s.theyInitiatePct}% of conversations (a new conversation = 6h+ gap).
+- Median reply time: user ${s.myMedianReplyMin ?? "?"} min, them ${s.theirMedianReplyMin ?? "?"} min.
+- Average message length: user ${s.myAvgLen} chars, them ${s.theirAvgLen} chars.
+- Today is ${today}. Their messages in the last 30 days: ${w.last30}, in the 30 days before that: ${w.prev30}.
+- Their most active hours (local time, 24h): ${s.theirTopHours.join(", ") || "n/a"}.
+- Last message ${toLocal(s.lastMessageAt, p.tzOffsetMin).toISOString().slice(0, 10)} (${w.daysSinceLast} days ago) from ${s.lastSender === "me" ? "the user" : "them"}.`;
+}
+
+/**
+ * Advice-only refresh: the saved read is the settled picture of the chat; only the advice is rewritten
+ * for the current notes, memory and date. Sends the last few messages, never the whole chat.
+ */
+export function buildAdvicePrompt(p: HeaderInput & { read: Analysis; msgs: Msg[] }) {
+  const profile = Object.fromEntries(Object.entries(p.read).filter(([k]) => !ADVICE_KEYS.includes(k as (typeof ADVICE_KEYS)[number])));
+  const previous = Object.fromEntries(ADVICE_KEYS.map((k) => [k, p.read[k]]));
+  return `${header(p)}
+
+Your settled read of the chat (do not re-judge it):
+<read>
+${JSON.stringify(profile)}
+</read>
+
+The advice you gave earlier:
+<previous_advice>
+${JSON.stringify(previous)}
+</previous_advice>
+
+The last messages of the chat, for tone and where it left off:
+<recent_chat>
+${p.msgs.slice(-INCREMENTAL_CONTEXT).map((m) => fmtLine(m, p.tzOffsetMin)).join("\n")}
+</recent_chat>
+
+Rewrite ONLY the advice so it fits the situation as of today: the user's notes and the memory list above are the newest information and may describe things that happened after the chat (talks in person, calls, fights, plans, replies). Where they conflict with the chat, they win. Account for how many days have passed since the last message. Keep earlier advice that still fits; replace what is now outdated, already done, or contradicted. In whatChanged, say plainly which new context you used.`;
+}
+
 export function buildPrompt(p: {
   personName: string;
   relation: RelationId;
@@ -79,19 +137,7 @@ export function buildPrompt(p: {
   facts?: { kind: string; text: string; happenedAt: Date | null }[];
 }) {
   const s = p.stats;
-  const w = activityWindows(s, p.now);
-  const today = toLocal(p.now ?? Date.now(), p.tzOffsetMin).toISOString().slice(0, 10);
-  return `The user is "${p.myName}" in the chat. The other person is "${p.theirName}" (${p.personName}), the user's ${RELATIONS[p.relation].toLowerCase()} (${p.gender.toLowerCase()}).
-Focus: ${FOCUS[p.relation]}
-${p.notes ? `Context from the user: ${p.notes}\n` : ""}
-${p.facts?.length ? `What is already known about them (memory from earlier reads, the coach and the user):\n${factsForPrompt(p.facts)}\n\n` : ""}Computed stats (exact, trust these over your own counting):
-- ${s.total} messages over ${s.days} days. User sent ${s.mine}, they sent ${s.theirs}.
-- They start ${s.theyInitiatePct}% of conversations (a new conversation = 6h+ gap).
-- Median reply time: user ${s.myMedianReplyMin ?? "?"} min, them ${s.theirMedianReplyMin ?? "?"} min.
-- Average message length: user ${s.myAvgLen} chars, them ${s.theirAvgLen} chars.
-- Today is ${today}. Their messages in the last 30 days: ${w.last30}, in the 30 days before that: ${w.prev30}.
-- Their most active hours (local time, 24h): ${s.theirTopHours.join(", ") || "n/a"}.
-- Last message ${toLocal(s.lastMessageAt, p.tzOffsetMin).toISOString().slice(0, 10)} (${w.daysSinceLast} days ago) from ${s.lastSender === "me" ? "the user" : "them"}.
+  return `${header(p)}
 All chat timestamps below are the user's local time.
 ${isThinChat(s) ? `\nLimited evidence: only ${s.total} messages over ${s.days} days. Set confidence to "low", keep signal levels at 1-2 unless something is unmistakable, and say in the explanation that the read will firm up with more chat.\n` : ""}${p.anchor && !p.previous ? anchorSection(p.anchor) : ""}${p.previous ? incrementalSection(p.msgs, p.previous, p.budget, p.tzOffsetMin) : fullSection(p.msgs, p.budget, p.tzOffsetMin)}`;
 }
@@ -102,7 +148,7 @@ A previous read of this same chat:
 <prior_read>
 ${JSON.stringify(prior)}
 </prior_read>
-Re-derive everything from the chat yourself. Keep a prior conclusion when the evidence still supports it; change it only if you can point to evidence the prior read missed or misread.
+Re-derive everything from the chat yourself. Keep a prior conclusion when the evidence still supports it; change it only if you can point to evidence the prior read missed or misread. The user's notes and the memory list may have changed since that read: next moves, message suggestions and other advice must follow the current ones, not the prior read.
 `;
 }
 

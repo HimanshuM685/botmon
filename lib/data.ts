@@ -7,6 +7,7 @@ import { decrypt, decryptBuffer } from "./crypto";
 import type { Msg } from "./parsers/types";
 import type { ProviderId } from "./ai/models";
 import { computeStats, type ChatStats } from "./stats";
+import { contextHash } from "./context";
 
 export const MAX_PEOPLE = 3;
 export const MAX_MESSAGES = 200_000;
@@ -53,4 +54,10 @@ export async function getActiveKey(userId: string) {
   const k = keys.find((x) => x.provider === user?.defaultProvider) ?? keys[0];
   if (!k) return null;
   return { provider: k.provider as ProviderId, model: k.model, apiKey: decrypt(k.cipher) };
+}
+
+/** Fingerprint of the person's notes and alive timeline right now (see lib/context.ts). */
+export async function currentContextHash(person: { id: string; notes: string | null; relation: string; gender: string }) {
+  const facts = await db.personFact.findMany({ where: { personId: person.id, ...alive }, select: { id: true, updatedAt: true } });
+  return contextHash(person, facts);
 }

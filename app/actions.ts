@@ -214,7 +214,8 @@ export async function saveFact(_: ActionState, form: FormData): Promise<ActionSt
   } else {
     await db.personFact.create({ data: { ...parsed.data, personId, source: "USER" } });
   }
-  revalidatePath(`/people/${personId}/timeline`);
+  // The whole person section: the read's advice depends on the timeline too.
+  revalidatePath(`/people/${personId}`, "layout");
   return { ok: true };
 }
 

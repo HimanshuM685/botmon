@@ -129,6 +129,9 @@ model Analysis {
   throughAt DateTime?
   /// "full" or "incremental"
   mode      String    @default("full")
+  /// Fingerprint of the notes and timeline the advice was written for, and when (lib/context.ts)
+  contextHash String?
+  adviceAt    DateTime?
   createdAt DateTime  @default(now())
   deletedAt DateTime?
   person    Person    @relation(fields: [personId], references: [id], onDelete: Cascade)

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { buildPrompt, INCREMENTAL_CONTEXT } from "./prompt";
+import { buildAdvicePrompt, buildPrompt, INCREMENTAL_CONTEXT } from "./prompt";
 import { computeStats } from "../stats";
 import type { Analysis } from "./schema";
 
@@ -26,4 +26,23 @@ it("full re-read carries the prior read as an anchor and flags thin chats", () =
   expect(p).toContain("Limited evidence");
   expect(buildPrompt(base)).not.toContain("<prior_read>");
   expect(buildPrompt(base)).not.toContain("Limited evidence");
+});
+
+it("advice refresh carries current notes, memory and date, the settled read, and only the tail of the chat", () => {
+  const read = { status: { label: "Warm", explanation: "x" }, nextMoves: [{ action: "old move", why: "", when: "" }], messageSuggestions: ["old text"] } as unknown as Analysis;
+  const p = buildAdvicePrompt({
+    ...base,
+    notes: "we had a fight yesterday",
+    facts: [{ kind: "EVENT", text: "She got a new job", happenedAt: null }],
+    now: Date.UTC(2027, 0, 5),
+    read,
+  });
+  expect(p).toContain("we had a fight yesterday");
+  expect(p).toContain("She got a new job");
+  expect(p).toContain("Today is 2027-01-05");
+  const part = (tag: string) => p.split(`<${tag}>`)[1].split(`</${tag}>`)[0];
+  expect(part("read")).toContain('"label":"Warm"');
+  expect(part("read")).not.toContain("old move"); // advice is not part of the settled read
+  expect(part("previous_advice")).toContain("old move");
+  expect(part("recent_chat").trim().split("\n")).toHaveLength(INCREMENTAL_CONTEXT);
 });

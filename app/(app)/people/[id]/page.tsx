@@ -3,7 +3,8 @@ import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { alive } from "@/lib/trash";
 import { Prisma } from "@/generated/prisma/client";
-import { getChatStats, getPerson } from "@/lib/data";
+import { currentContextHash, getChatStats, getPerson } from "@/lib/data";
+import { adviceStale } from "@/lib/context";
 import { activityWindows } from "@/lib/stats";
 import { ChatUploader } from "@/components/chat-uploader";
 import { AnalysisView, type ReadState } from "@/components/analysis-view";
@@ -14,10 +15,11 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   const person = await getPerson(user.id, (await params).id);
   if (!person) notFound();
 
-  const [chat, analyses, keyCount] = await Promise.all([
+  const [chat, analyses, keyCount, context] = await Promise.all([
     db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
     db.analysis.findMany({ where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
     db.apiKey.count({ where: { userId: user.id } }),
+    currentContextHash(person),
   ]);
   const stats = chat ? await getChatStats(chat) : null;
   const recent = stats ? activityWindows(stats) : null;
@@ -61,6 +63,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         personId={person.id}
         state={readState}
         canRun={!!chat && keyCount > 0}
+        advice={{ stale: !!last && !!chat && adviceStale(last, context), key: context, at: last?.adviceAt?.toISOString() }}
         history={analyses.map((a) => ({ id: a.id, createdAt: a.createdAt.toISOString(), model: a.model, mode: a.mode, result: a.result as Analysis }))}
       />
     </div>

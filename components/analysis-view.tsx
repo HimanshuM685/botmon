@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useObject } from "@ai-sdk/react";
 import type { DeepPartial } from "ai";
 import { toast } from "sonner";
-import { analysisSchema, type Analysis } from "@/lib/ai/schema";
+import { adviceSchema, analysisSchema, type Analysis } from "@/lib/ai/schema";
 import { trashItem } from "@/app/actions";
 
 type Saved = { id: string; createdAt: string; model: string; mode: string; result: Analysis };
@@ -20,7 +20,16 @@ function errorText(e: Error) {
   }
 }
 
-export function AnalysisView({ personId, history, canRun, state }: { personId: string; history: Saved[]; canRun: boolean; state: ReadState }) {
+type AdviceStatus = { state: "idle" | "updating" | "failed"; at?: string; refresh: () => void };
+
+export function AnalysisView({ personId, history, canRun, state, advice }: {
+  personId: string;
+  history: Saved[];
+  canRun: boolean;
+  state: ReadState;
+  /** Whether the newest read's advice still matches the current notes and timeline (`key` changes whenever they do). */
+  advice: { stale: boolean; key: string; at?: string };
+}) {
   const router = useRouter();
   // null = follow the newest saved analysis
   const [selected, setSelected] = useState<string | null>(null);
@@ -49,7 +58,40 @@ export function AnalysisView({ personId, history, canRun, state }: { personId: s
     },
   });
 
+  // Live advice: rewritten on its own when notes, the timeline or the date change. No chat re-read.
+  const [adviceFailed, setAdviceFailed] = useState(false);
+  const adviceNoop = useRef(false);
+  const adv = useObject({
+    api: `/api/people/${personId}/advice`,
+    schema: adviceSchema,
+    fetch: async (input, init) => {
+      const res = await fetch(input, init);
+      adviceNoop.current = res.status === 204; // already current (another tab refreshed it)
+      return adviceNoop.current ? new Response("{}") : res;
+    },
+    onError: () => setAdviceFailed(true),
+    onFinish: ({ error }) => {
+      if (adviceNoop.current) return;
+      if (error) return setAdviceFailed(true);
+      router.refresh();
+    },
+  });
+  function refreshAdvice() {
+    setAdviceFailed(false);
+    adv.submit({});
+  }
+  // Start by itself, once per context change.
+  const triedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!advice.stale || !canRun || isLoading || triedFor.current === advice.key) return;
+    triedFor.current = advice.key;
+    refreshAdvice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advice.stale, advice.key, canRun, isLoading]);
+
   function run(mode: "auto" | "full") {
+    adv.stop();
+    adv.clear();
     setSelected(null);
     setBaseline(history[0]?.id);
     submit({ mode });
@@ -57,8 +99,13 @@ export function AnalysisView({ personId, history, canRun, state }: { personId: s
 
   const latest = history[0];
   const waitingForRefresh = object && baseline !== null && latest?.id === baseline;
+  const viewingLatest = !selected && !isLoading && !waitingForRefresh;
+  const saved = (selected ? history.find((h) => h.id === selected) : latest)?.result;
   const shown: DeepPartial<Analysis> | undefined =
-    isLoading || waitingForRefresh ? object : (selected ? history.find((h) => h.id === selected) : latest)?.result;
+    isLoading || waitingForRefresh ? object : viewingLatest && adv.object ? { ...saved, ...adv.object } : saved;
+  const adviceStatus: AdviceStatus | undefined = viewingLatest && latest
+    ? { state: adv.isLoading ? "updating" : adviceFailed && advice.stale ? "failed" : "idle", at: advice.at, refresh: refreshAdvice }
+    : undefined;
 
   return (
     <section className="space-y-6">
@@ -105,7 +152,7 @@ export function AnalysisView({ personId, history, canRun, state }: { personId: s
         </div>
       )}
       {isLoading && !object?.status && <div className="card h-48 animate-pulse" aria-busy />}
-      {shown && <Report a={shown} live={isLoading} />}
+      {shown && <Report a={shown} live={isLoading} advice={adviceStatus} />}
     </section>
   );
 }
@@ -121,7 +168,7 @@ const SECTIONS = [
   ["now", "Now"], ["person", "Who they are"], ["memory", "Memory"], ["story", "Your story"], ["you", "Your side"], ["moves", "What to do"],
 ] as const;
 
-function Report({ a, live }: { a: DeepPartial<Analysis>; live: boolean }) {
+function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; advice?: AdviceStatus }) {
   const score = a.status?.score == null ? undefined : Math.round(a.status.score);
   const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.success("Copied"));
   return (
@@ -277,6 +324,23 @@ function Report({ a, live }: { a: DeepPartial<Analysis>; live: boolean }) {
       </Group>
 
       <Group id="moves" title="What to do">
+        {advice && (advice.state !== "idle" || a.whatChanged || advice.at) && (
+          <div className="card flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 text-sm" aria-live="polite">
+            {advice.state === "updating" ? (
+              <span className="animate-pulse text-mint">Updating for your latest context…</span>
+            ) : advice.state === "failed" ? (
+              <>
+                <span className="text-amber">Your notes or timeline changed since this advice was written.</span>
+                <button className="text-heart underline-offset-4 hover:underline" onClick={advice.refresh}>Refresh advice</button>
+              </>
+            ) : (
+              <>
+                {a.whatChanged && <span className="min-w-0 flex-1 text-muted">{a.whatChanged}</span>}
+                {advice.at && <span className="chip shrink-0">Updated {new Date(advice.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>}
+              </>
+            )}
+          </div>
+        )}
         {!!a.nextMoves?.length && (
           <Block title="Next moves" tone="mint">
             <ol className="space-y-4">

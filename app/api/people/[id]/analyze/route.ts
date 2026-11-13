@@ -1,11 +1,12 @@
 import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/data";
+import { currentContextHash, getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/data";
 import { analysisSchema, type Analysis } from "@/lib/ai/schema";
 import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
-import { getModel, providerError } from "@/lib/ai/provider";
+import { getModel } from "@/lib/ai/provider";
+import { seedFor, streamResponse } from "@/lib/ai/stream";
 import { FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
@@ -87,57 +88,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     maxRetries: 1,
   });
 
-  // Wait for the first token so auth/quota errors become a proper error response instead of an empty stream.
-  const parts = result.stream[Symbol.asyncIterator]();
-  const next = async (): Promise<{ text: string } | { error: unknown } | null> => {
-    for (;;) {
-      const n = await parts.next();
-      if (n.done) return null;
-      if (n.value.type === "text-delta") return { text: n.value.text };
-      if (n.value.type === "error") return { error: n.value.error };
-    }
-  };
-  const first = await next();
-  if (!first || "error" in first) {
-    const err = first?.error ?? new Error("The model returned nothing");
-    console.error("analyze failed", key.provider, key.model, (err as Error)?.message);
-    return Response.json({ error: providerError(err) }, { status: 502 });
-  }
-
-  const enc = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start: (c) => c.enqueue(enc.encode(first.text)),
-    async pull(c) {
-      const n = await next();
-      if (!n) {
-        // Save before closing so the client's refresh sees it. Invalid/partial JSON throws and is not saved.
-        try {
-          const generated = await result.output;
-          const output: Analysis = { ...generated, status: { ...generated.status, score: computeScore(generated.signals, stats) } };
-          await db.analysis.update({ where: { id: run.id }, data: { result: output } });
-          // Keep every new detail as long-term memory (skips ones already on the timeline).
-          // Facts the user deleted count as known too, so a re-read doesn't bring them back.
-          const fresh = newFacts(allFacts.map((f) => f.text), factsFromAnalysis(output));
-          if (fresh.length)
-            await db.personFact.createMany({ data: fresh.map((f) => ({ ...f, personId: person.id, source: "ANALYSIS" as const, analysisId: run.id })) });
-        } catch (e) {
-          console.error("analysis not saved", (e as Error)?.message);
-        }
-        return c.close();
-      }
-      if ("error" in n) return c.error(n.error);
-      c.enqueue(enc.encode(n.text));
+  return streamResponse(result.stream, {
+    label: `analyze ${key.provider} ${key.model}`,
+    headers: { "x-read-mode": mode, "x-read-messages": String(newMessages) },
+    onDone: async () => {
+      const generated = await result.output;
+      const output: Analysis = { ...generated, status: { ...generated.status, score: computeScore(generated.signals, stats) } };
+      // Keep every new detail as long-term memory (skips ones already on the timeline).
+      // Facts the user deleted count as known too, so a re-read doesn't bring them back.
+      const fresh = newFacts(allFacts.map((f) => f.text), factsFromAnalysis(output));
+      if (fresh.length)
+        await db.personFact.createMany({ data: fresh.map((f) => ({ ...f, personId: person.id, source: "ANALYSIS" as const, analysisId: run.id })) });
+      // Fingerprint after the new facts land, so the read's own facts don't make its advice look stale.
+      const contextHash = await currentContextHash(person);
+      await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash, adviceAt: new Date() } });
     },
-    cancel: () => void parts.return?.(),
   });
-  return new Response(body, {
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-read-mode": mode, "x-read-messages": String(newMessages) },
-  });
-}
-
-/** Stable 31-bit seed from the chat id. */
-function seedFor(id: string) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) | 0;
-  return h & 0x7fffffff;
 }

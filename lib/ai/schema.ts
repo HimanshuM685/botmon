@@ -101,6 +101,14 @@ export const analysisSchema = z.object({
   avoid: z.array(z.string()).describe("2-5 things the user should stop or avoid doing"),
 });
 
+/** The live part of a read: rewritten on its own whenever notes, the timeline or the date change (no chat re-read). */
+export const adviceSchema = z.object({
+  whatChanged: z.string().describe("1-2 sentences: what in the current notes, memory or timing shaped this advice. Empty string if nothing beyond the chat."),
+  ...analysisSchema.pick({ openThreads: true, thingsToCareAbout: true, nextMoves: true, messageSuggestions: true, conversationStarters: true, avoid: true }).shape,
+});
+export type Advice = z.infer<typeof adviceSchema>;
+export const ADVICE_KEYS = Object.keys(adviceSchema.shape) as (keyof Advice)[];
+
 type Generated = z.infer<typeof analysisSchema>;
 /** `status.score` is computed in code after generation (older saved reads carry the model's own score there). */
-export type Analysis = Omit<Generated, "status"> & { status: Generated["status"] & { score?: number } };
+export type Analysis = Omit<Generated, "status"> & { status: Generated["status"] & { score?: number }; whatChanged?: string };
