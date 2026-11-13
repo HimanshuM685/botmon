@@ -75,11 +75,11 @@ export default async function Landing() {
         <div>
           <h2 className="display text-4xl">Private by design.</h2>
           <p className="mt-4 max-w-md leading-relaxed text-muted">
-            Chats and keys are encrypted with AES-256 before they touch the database. Your AI key talks to your provider directly from our server, never shared. Delete a person or your whole account any time and it&apos;s gone.
+            Chats and keys are encrypted with AES-256 before they touch the database. Your AI key talks to your provider directly from our server, never shared. Delete anything any time: it waits 30 days in the trash in case you change your mind, then it&apos;s erased for good.
           </p>
         </div>
         <ul className="space-y-3 text-sm">
-          {["Bring your own key: Gemini (free), OpenAI or NVIDIA NIM", "Advice that respects boundaries. No manipulation tricks.", "Export or delete everything in one click"].map((t) => (
+          {["Bring your own key: Gemini (free), Groq (free), OpenAI, Grok or NVIDIA NIM", "A coach for each person that remembers what you tell it", "Advice that respects boundaries. No manipulation tricks.", "Export everything, delete anything (30-day undo)"].map((t) => (
             <li key={t} className="card flex items-center gap-3 px-5 py-4">
               <span className="size-2 shrink-0 rounded-full bg-mint" />
               {t}

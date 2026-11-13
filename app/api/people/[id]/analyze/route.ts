@@ -1,11 +1,12 @@
 import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { getActiveKey, getChatStats, getPerson, loadChat } from "@/lib/data";
+import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/data";
 import { analysisSchema, type Analysis } from "@/lib/ai/schema";
 import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel, providerError } from "@/lib/ai/provider";
+import { factsFromAnalysis, newFacts } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 
 export const maxDuration = 300;
@@ -19,7 +20,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const [key, chat] = await Promise.all([
     getActiveKey(userId),
-    db.chatUpload.findFirst({ where: { personId: person.id }, orderBy: { createdAt: "desc" } }),
+    getChat(person.id),
   ]);
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
   if (!chat) return Response.json({ error: "Upload a chat first" }, { status: 400 });
@@ -29,7 +30,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const prev = full
     ? null
     : await db.analysis.findFirst({
-        where: { personId: person.id, chatId: chat.id, result: { not: Prisma.DbNull }, throughAt: { not: null } },
+        where: { personId: person.id, chatId: chat.id, deletedAt: null, result: { not: Prisma.DbNull }, throughAt: { not: null } },
         orderBy: { createdAt: "desc" },
       });
   if (prev && chat.lastAt <= prev.throughAt!)
@@ -47,7 +48,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "Hourly limit reached. Try again later." }, { status: 429 });
   }
 
-  const msgs = await loadChat(chat.cipher);
+  const [msgs, allFacts] = await Promise.all([
+    loadChat(chat.cipher),
+    db.personFact.findMany({ where: { personId: person.id }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { kind: true, text: true, happenedAt: true, deletedAt: true } }),
+  ]);
+  const facts = allFacts.filter((f) => !f.deletedAt);
   const prompt = buildPrompt({
     personName: person.name,
     relation: person.relation as RelationId,
@@ -60,6 +65,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     msgs,
     budget: CHAR_BUDGET[key.provider],
     previous: prev ? { result: prev.result as unknown as Analysis, throughAt: prev.throughAt!.getTime() } : undefined,
+    facts,
   });
   const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
 
@@ -98,6 +104,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         try {
           const output = await result.output;
           await db.analysis.update({ where: { id: run.id }, data: { result: output } });
+          // Keep every new detail as long-term memory (skips ones already on the timeline).
+          // Facts the user deleted count as known too, so a re-read doesn't bring them back.
+          const fresh = newFacts(allFacts.map((f) => f.text), factsFromAnalysis(output));
+          if (fresh.length)
+            await db.personFact.createMany({ data: fresh.map((f) => ({ ...f, personId: person.id, source: "ANALYSIS" as const, analysisId: run.id })) });
         } catch (e) {
           console.error("analysis not saved", (e as Error)?.message);
         }

@@ -2,6 +2,7 @@ import "server-only";
 import { gunzipSync } from "node:zlib";
 import { z } from "zod";
 import { db } from "./db";
+import { alive } from "./trash";
 import { decrypt, decryptBuffer } from "./crypto";
 import type { Msg } from "./parsers/types";
 import type { ProviderId } from "./ai/models";
@@ -21,9 +22,14 @@ export const chatPayloadSchema = z.object({
     .max(MAX_MESSAGES),
 });
 
-/** Owner-scoped person lookup. Returns null for other users' ids. */
+/** Owner-scoped person lookup. Returns null for other users' ids and for people in the trash. */
 export function getPerson(userId: string, personId: string) {
-  return db.person.findFirst({ where: { id: personId, userId } });
+  return db.person.findFirst({ where: { id: personId, userId, ...alive } });
+}
+
+/** The person's current chat (not in the trash). */
+export function getChat(personId: string) {
+  return db.chatUpload.findFirst({ where: { personId, ...alive }, orderBy: { createdAt: "desc" } });
 }
 
 export async function loadChat(cipher: string): Promise<Msg[]> {

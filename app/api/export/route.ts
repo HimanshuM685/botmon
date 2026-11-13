@@ -5,7 +5,16 @@ import { loadChat } from "@/lib/data";
 export async function GET() {
   const userId = await getUserId();
   if (!userId) return Response.json({ error: "Not signed in" }, { status: 401 });
-  const people = await db.person.findMany({ where: { userId }, include: { chats: true, analyses: true } });
+  // Everything, including items in the trash (they carry deletedAt).
+  const people = await db.person.findMany({
+    where: { userId },
+    include: {
+      chats: true,
+      analyses: { orderBy: { createdAt: "asc" } },
+      facts: { orderBy: { createdAt: "asc" } },
+      threads: { orderBy: { createdAt: "asc" }, include: { messages: { orderBy: { createdAt: "asc" } } } },
+    },
+  });
   const data = await Promise.all(
     people.map(async ({ chats, ...p }) => ({
       ...p,

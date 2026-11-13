@@ -1,15 +1,12 @@
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
+import { alive } from "@/lib/trash";
 import { Prisma } from "@/generated/prisma/client";
 import { getChatStats, getPerson } from "@/lib/data";
 import { activityWindows } from "@/lib/stats";
-import { RELATIONS } from "@/lib/labels";
-import { deletePerson } from "@/app/actions";
 import { ChatUploader } from "@/components/chat-uploader";
 import { AnalysisView, type ReadState } from "@/components/analysis-view";
-import { ConfirmButton } from "@/components/confirm-button";
-import { EditPerson } from "@/components/edit-person";
 import type { Analysis } from "@/lib/ai/schema";
 
 export default async function PersonPage({ params }: PageProps<"/people/[id]">) {
@@ -18,8 +15,8 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   if (!person) notFound();
 
   const [chat, analyses, keyCount] = await Promise.all([
-    db.chatUpload.findFirst({ where: { personId: person.id }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
-    db.analysis.findMany({ where: { personId: person.id, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
+    db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
+    db.analysis.findMany({ where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
     db.apiKey.count({ where: { userId: user.id } }),
   ]);
   const stats = chat ? await getChatStats(chat) : null;
@@ -34,16 +31,6 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
 
   return (
     <div className="space-y-10">
-      <header className="flex flex-wrap items-end gap-4">
-        <div className="mr-auto">
-          <span className="chip">{RELATIONS[person.relation]}</span>
-          <h1 className="display mt-3 text-5xl">{person.name}</h1>
-        </div>
-        <EditPerson person={person} />
-        <ConfirmButton action={deletePerson.bind(null, person.id)} confirm={`Delete ${person.name} and all their chats and analyses?`} className="btn-danger h-9 px-4">
-          Delete
-        </ConfirmButton>
-      </header>
 
       {chat && stats && recent && (
         <section className="space-y-4">

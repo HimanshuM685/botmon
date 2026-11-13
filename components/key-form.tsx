@@ -22,7 +22,7 @@ export function KeyForm({ next }: { next?: string }) {
 
   return (
     <form action={action} className="space-y-5">
-      <div role="radiogroup" aria-label="Provider" className="grid grid-cols-3 gap-2">
+      <div role="radiogroup" aria-label="Provider" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         {PROVIDER_IDS.map((id) => (
           <button
             key={id} type="button" role="radio" aria-checked={provider === id} onClick={() => setProvider(id)}

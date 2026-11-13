@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
+import { alive } from "@/lib/trash";
 import { Prisma } from "@/generated/prisma/client";
 import { MAX_PEOPLE } from "@/lib/data";
 import { RELATIONS, timeAgo } from "@/lib/labels";
@@ -15,11 +16,11 @@ export default async function Dashboard() {
   const [keyCount, people] = await Promise.all([
     db.apiKey.count({ where: { userId: user.id } }),
     db.person.findMany({
-      where: { userId: user.id },
+      where: { userId: user.id, ...alive },
       orderBy: { createdAt: "asc" },
       include: {
-        chats: { select: { msgCount: true, lastAt: true }, take: 1 },
-        analyses: { where: { result: { not: Prisma.DbNull } }, select: { result: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
+        chats: { where: alive, select: { msgCount: true, lastAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
+        analyses: { where: { ...alive, result: { not: Prisma.DbNull } }, select: { result: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
       },
     }),
   ]);

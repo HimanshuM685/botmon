@@ -8,6 +8,7 @@ import { auth, requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { MAX_PEOPLE, getPerson } from "@/lib/data";
+import { alive } from "@/lib/trash";
 import { PROVIDER_IDS, type ProviderId } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { RELATIONS } from "@/lib/ai/prompt";
@@ -39,7 +40,7 @@ export async function savePerson(_: ActionState, form: FormData): Promise<Action
     return { ok: true };
   }
   // ponytail: count-then-insert can race to 4 on double submit; add a DB trigger if that ever matters
-  if ((await db.person.count({ where: { userId: user.id } })) >= MAX_PEOPLE)
+  if ((await db.person.count({ where: { userId: user.id, ...alive } })) >= MAX_PEOPLE)
     return { error: `You can track up to ${MAX_PEOPLE} people.` };
   const person = await db.person.create({ data: { ...parsed.data, userId: user.id } });
   redirect(`/people/${person.id}`);
@@ -47,7 +48,7 @@ export async function savePerson(_: ActionState, form: FormData): Promise<Action
 
 export async function deletePerson(id: string) {
   const user = await requireUser();
-  await db.person.deleteMany({ where: { id, userId: user.id } });
+  await db.person.updateMany({ where: { id, userId: user.id, ...alive }, data: { deletedAt: new Date() } });
   redirect("/dashboard");
 }
 
@@ -108,9 +109,130 @@ export async function setDefaultProvider(input: ProviderId) {
 
 export async function deleteAccount() {
   const user = await requireUser();
-  await db.user.delete({ where: { id: user.id } }); // cascades to keys, people, chats, analyses
-  const { error } = await auth.deleteUser({});
-  if (error) console.error("neon auth deleteUser failed", error.message);
+  // 30-day grace: hide everything now; lib/purge.ts erases the account (app data + Neon Auth identity) later.
+  await db.user.update({ where: { id: user.id }, data: { deletedAt: new Date() } });
   await auth.signOut();
   redirect("/");
+}
+
+/* ---------- 30-day trash ---------- */
+
+export async function restoreAccount() {
+  const { data } = await auth.getSession();
+  if (!data?.user) redirect("/");
+  await db.user.update({ where: { id: data.user.id }, data: { deletedAt: null } });
+  redirect("/dashboard");
+}
+
+const trashKind = z.enum(["person", "chat", "analysis", "thread", "fact"]);
+type TrashKind = z.infer<typeof trashKind>;
+
+/** Owner-checked lookup of any trashable row; returns its person. */
+async function ownedItem(userId: string, kind: TrashKind, id: string) {
+  const owner = { person: { userId } };
+  switch (kind) {
+    case "person": {
+      const p = await db.person.findFirst({ where: { id, userId } });
+      return p && { personId: p.id, personDeleted: !!p.deletedAt };
+    }
+    case "chat": {
+      const r = await db.chatUpload.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
+      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
+    }
+    case "analysis": {
+      const r = await db.analysis.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
+      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
+    }
+    case "thread": {
+      const r = await db.coachThread.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
+      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
+    }
+    case "fact": {
+      const r = await db.personFact.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
+      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
+    }
+  }
+}
+
+async function setDeleted(kind: TrashKind, id: string, deletedAt: Date | null) {
+  const data = { deletedAt };
+  switch (kind) {
+    case "person": return db.person.update({ where: { id }, data });
+    case "chat": return db.chatUpload.update({ where: { id }, data });
+    case "analysis": return db.analysis.update({ where: { id }, data });
+    case "thread": return db.coachThread.update({ where: { id }, data });
+    case "fact": return db.personFact.update({ where: { id }, data });
+  }
+}
+
+/** Move one item to the trash. People use deletePerson (it redirects). */
+export async function trashItem(kindInput: string, id: string): Promise<ActionState> {
+  const user = await requireUser();
+  const kind = trashKind.safeParse(kindInput);
+  if (!kind.success) return { error: "Unknown item" };
+  const item = await ownedItem(user.id, kind.data, id);
+  if (!item) return { error: "Not found" };
+  await setDeleted(kind.data, id, new Date());
+  revalidatePath(`/people/${item.personId}`, "layout");
+  revalidatePath("/trash");
+  return { ok: true };
+}
+
+export async function restoreItem(kindInput: string, id: string): Promise<ActionState> {
+  const user = await requireUser();
+  const kind = trashKind.safeParse(kindInput);
+  if (!kind.success) return { error: "Unknown item" };
+  const item = await ownedItem(user.id, kind.data, id);
+  if (!item) return { error: "Not found" };
+
+  // Restoring something inside a deleted person brings the person back too.
+  if (item.personDeleted) {
+    if ((await db.person.count({ where: { userId: user.id, ...alive } })) >= MAX_PEOPLE)
+      return { error: `You already track ${MAX_PEOPLE} people. Delete one first to restore this.` };
+    await db.person.update({ where: { id: item.personId }, data: { deletedAt: null } });
+  }
+  // Only one live chat per person: restoring an old chat sends the current one to the trash.
+  if (kind.data === "chat")
+    await db.chatUpload.updateMany({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, data: { deletedAt: new Date() } });
+  if (kind.data !== "person") await setDeleted(kind.data, id, null);
+
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/* ---------- Timeline facts ---------- */
+
+const factSchema = z.object({
+  text: z.string().trim().min(1, "Write something").max(1000),
+  kind: z.enum(["FACT", "EVENT", "DATE", "PREFERENCE"]),
+  happenedAt: z.string().optional().transform((s) => (s ? new Date(s) : null)).refine((d) => !d || !Number.isNaN(d.getTime()), "Invalid date"),
+});
+
+export async function saveFact(_: ActionState, form: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  const personId = String(form.get("personId") ?? "");
+  if (!(await getPerson(user.id, personId))) return { error: "Not found" };
+  const parsed = factSchema.safeParse(Object.fromEntries(form));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const id = form.get("id")?.toString();
+  if (id) {
+    const res = await db.personFact.updateMany({ where: { id, personId, ...alive }, data: parsed.data });
+    if (!res.count) return { error: "Not found" };
+  } else {
+    await db.personFact.create({ data: { ...parsed.data, personId, source: "USER" } });
+  }
+  revalidatePath(`/people/${personId}/timeline`);
+  return { ok: true };
+}
+
+/* ---------- Coach threads ---------- */
+
+export async function renameThread(id: string, title: string): Promise<ActionState> {
+  const user = await requireUser();
+  const t = z.string().trim().min(1).max(80).safeParse(title);
+  if (!t.success) return { error: "Title must be 1–80 characters" };
+  const res = await db.coachThread.updateMany({ where: { id, person: { userId: user.id }, ...alive }, data: { title: t.data } });
+  if (!res.count) return { error: "Not found" };
+  revalidatePath("/people", "layout");
+  return { ok: true };
 }

@@ -10,7 +10,22 @@ datasource db {
 enum Provider {
   GEMINI
   OPENAI
+  GROK
+  GROQ
   NIM
+}
+
+enum FactKind {
+  FACT
+  EVENT
+  DATE
+  PREFERENCE
+}
+
+enum FactSource {
+  ANALYSIS
+  COACH
+  USER
 }
 
 enum Relation {
@@ -43,6 +58,7 @@ model User {
   image           String?
   defaultProvider Provider?
   createdAt       DateTime  @default(now())
+  deletedAt       DateTime?
   apiKeys         ApiKey[]
   people          Person[]
 }
@@ -61,16 +77,20 @@ model ApiKey {
 }
 
 model Person {
-  id        String       @id @default(cuid())
+  id        String        @id @default(cuid())
   userId    String
   name      String
   relation  Relation
-  gender    Gender       @default(FEMALE)
+  gender    Gender        @default(FEMALE)
   notes     String?
-  createdAt DateTime     @default(now())
-  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+  /// Soft delete: hidden now, purged 30 days later (lib/purge.ts)
+  deletedAt DateTime?
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   chats     ChatUpload[]
   analyses  Analysis[]
+  facts     PersonFact[]
+  threads   CoachThread[]
 
   @@index([userId])
 }
@@ -91,13 +111,14 @@ model ChatUpload {
   /// Uploader's Date#getTimezoneOffset(), minutes
   tzOffset  Int        @default(0)
   createdAt DateTime   @default(now())
+  deletedAt DateTime?
   person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
 
   @@index([personId])
 }
 
 model Analysis {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   personId  String
   provider  Provider
   model     String
@@ -108,8 +129,52 @@ model Analysis {
   throughAt DateTime?
   /// "full" or "incremental"
   mode      String    @default("full")
-  createdAt DateTime @default(now())
-  person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+  person    Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
 
   @@index([personId, createdAt])
+}
+
+/// Long-term memory about a person: extracted by analyses, saved by the coach, or added by the user.
+model PersonFact {
+  id         String     @id @default(cuid())
+  personId   String
+  kind       FactKind
+  text       String
+  happenedAt DateTime?
+  source     FactSource
+  analysisId String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  deletedAt  DateTime?
+  person     Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@index([personId, deletedAt])
+}
+
+model CoachThread {
+  id        String         @id @default(cuid())
+  personId  String
+  title     String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  deletedAt DateTime?
+  person    Person         @relation(fields: [personId], references: [id], onDelete: Cascade)
+  messages  CoachMessage[]
+
+  @@index([personId, deletedAt, updatedAt])
+}
+
+/// One row per UI message (AI SDK UIMessage), tool calls included in parts. Never trimmed.
+model CoachMessage {
+  id        String      @id
+  threadId  String
+  role      String
+  parts     Json
+  metadata  Json?
+  createdAt DateTime    @default(now())
+  thread    CoachThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
 }

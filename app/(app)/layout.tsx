@@ -15,6 +15,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/dashboard" className="display text-xl italic">botmon</Link>
           <Link href="/dashboard" className="text-sm text-muted hover:text-paper">People</Link>
           <Link href="/settings" className="text-sm text-muted hover:text-paper">Settings</Link>
+          <Link href="/trash" className="text-sm text-muted hover:text-paper">Trash</Link>
           <div className="ml-auto flex items-center gap-3">
             {user.image && <Image src={user.image} alt="" width={28} height={28} className="rounded-full" />}
             <form action={signOutAction}>

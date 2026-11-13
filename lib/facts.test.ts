@@ -1,0 +1,23 @@
+import { expect, it } from "vitest";
+import { factsFromAnalysis, newFacts } from "./facts";
+
+it("turns keyFacts and importantDates into typed facts", () => {
+  const facts = factsFromAnalysis({
+    keyFacts: [
+      { fact: "Has a younger brother, Kabir", category: "family", when: "" },
+      { fact: "Loves filter coffee", category: "preference", when: "" },
+      { fact: "Moved to Pune", category: "event", when: "2026-06-01" },
+      { fact: "Exam season", category: "study", when: "March" },
+    ],
+    importantDates: [{ date: "2026-12-04", what: "Birthday" }, { date: "12-04", what: "Mom's birthday" }],
+  });
+  expect(facts.map((f) => f.kind)).toEqual(["FACT", "PREFERENCE", "EVENT", "FACT", "DATE", "DATE"]);
+  expect(facts[2].happenedAt?.toISOString().slice(0, 10)).toBe("2026-06-01");
+  expect(facts[3].text).toBe("Exam season (March)");
+  expect(facts[5]).toMatchObject({ text: "Mom's birthday (12-04)", happenedAt: null });
+});
+
+it("de-dupes against stored facts and within the batch, ignoring case and punctuation", () => {
+  const c = factsFromAnalysis({ keyFacts: [{ fact: "Loves filter coffee!", category: "preference", when: "" }, { fact: "loves  filter coffee", category: "preference", when: "" }, { fact: "Plays badminton", category: "other", when: "" }] });
+  expect(newFacts(["loves filter coffee"], c).map((f) => f.text)).toEqual(["Plays badminton"]);
+});
