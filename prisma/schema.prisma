@@ -148,12 +148,31 @@ model PersonFact {
   happenedAt DateTime?
   source     FactSource
   analysisId String?
+  /// People, places, topics and events this memory is about, normalised (lib/facts.ts normalizeEntity).
+  /// Memories sharing one are connected: the memory graph.
+  entities   String[]   @default([])
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
   deletedAt  DateTime?
   person     Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+  linksFrom  MemoryLink[] @relation("from")
+  linksTo    MemoryLink[] @relation("to")
 
   @@index([personId, deletedAt])
+}
+
+/// A direct link between two memories that shared entities can't express, e.g. the new memory "updates" the old one.
+model MemoryLink {
+  id     String     @id @default(cuid())
+  fromId String
+  toId   String
+  /// "updates" | "caused" | "contradicts" | "partOf"
+  kind   String
+  from   PersonFact @relation("from", fields: [fromId], references: [id], onDelete: Cascade)
+  to     PersonFact @relation("to", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId, kind])
+  @@index([toId])
 }
 
 model CoachThread {

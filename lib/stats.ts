@@ -91,8 +91,9 @@ const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 /**
  * 0-100 score from the model's rubric levels (70%) and exact chat stats (30%), shrunk toward 50
  * when there is little chat. Same signals and stats always give the same score.
+ * With no chat (a read built from what the user told the coach) the stats part is neutral and the pull to 50 is strongest.
  */
-export function computeScore(signals: Signals, s: ChatStats, now = Date.now()): number {
+export function computeScore(signals: Signals, s: ChatStats | null, now = Date.now()): number {
   let sum = 0, weight = 0;
   for (const [k, w] of Object.entries(SIGNAL_WEIGHTS)) {
     const level = signals[k as keyof Signals]?.level;
@@ -102,17 +103,20 @@ export function computeScore(signals: Signals, s: ChatStats, now = Date.now()): 
   }
   const model = weight ? sum / weight : 0.5;
 
-  const w = activityWindows(s, now);
-  const statParts = [
-    clamp01(s.theyInitiatePct / 50), // they start half the conversations = fully even
-    s.myMedianReplyMin == null || s.theirMedianReplyMin == null ? 0.5 : clamp01((s.myMedianReplyMin + 1) / (s.theirMedianReplyMin + 1)),
-    s.myAvgLen ? clamp01(s.theirAvgLen / s.myAvgLen) : 0.5,
-    w.last30 + w.prev30 ? w.last30 / (w.last30 + w.prev30) : 0.5,
-  ];
-  const fromStats = statParts.reduce((a, b) => a + b, 0) / statParts.length;
-
+  let fromStats = 0.5, certainty = 0.5;
+  if (s) {
+    const w = activityWindows(s, now);
+    const statParts = [
+      clamp01(s.theyInitiatePct / 50), // they start half the conversations = fully even
+      s.myMedianReplyMin == null || s.theirMedianReplyMin == null ? 0.5 : clamp01((s.myMedianReplyMin + 1) / (s.theirMedianReplyMin + 1)),
+      s.myAvgLen ? clamp01(s.theirAvgLen / s.myAvgLen) : 0.5,
+      // A chat younger than the two windows has nothing "before" to compare with: neutral, not "warming".
+      s.days >= 60 && w.last30 + w.prev30 ? w.last30 / (w.last30 + w.prev30) : 0.5,
+    ];
+    fromStats = statParts.reduce((a, b) => a + b, 0) / statParts.length;
+    certainty = 0.5 + 0.5 * clamp01(Math.min(s.total / 300, s.days / 14));
+  }
   const raw = 100 * (0.7 * model + 0.3 * fromStats);
-  const certainty = 0.5 + 0.5 * clamp01(Math.min(s.total / 300, s.days / 14));
   return Math.round(50 + (raw - 50) * certainty);
 }
 

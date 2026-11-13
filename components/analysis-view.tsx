@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useObject } from "@ai-sdk/react";
 import type { DeepPartial } from "ai";
 import { toast } from "sonner";
-import { adviceSchema, analysisSchema, type Analysis } from "@/lib/ai/schema";
+import { analysisSchema, modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
 import { trashItem } from "@/app/actions";
 import { ConfirmButton } from "./confirm-button";
 
@@ -23,12 +24,26 @@ function errorText(e: Error) {
 
 type AdviceStatus = { state: "idle" | "updating" | "failed"; at?: string; refresh: () => void };
 
-export function AnalysisView({ personId, history, canRun, state, advice }: {
+/** Lay a streaming model update over the saved read: sections the update left null keep their saved value. */
+function overlay(saved: DeepPartial<Analysis> | undefined, patch: DeepPartial<ModelPatch>): DeepPartial<Analysis> {
+  const out: Record<string, unknown> = { ...saved };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v == null) continue;
+    out[k] = k === "status" ? { ...saved?.status, ...(v as object) } : v; // keep the score until the server recomputes it
+  }
+  return out as DeepPartial<Analysis>;
+}
+
+export function AnalysisView({ personId, history, hasChat, canRun, canSync, state, advice }: {
   personId: string;
+  hasChat: boolean;
   history: Saved[];
+  /** A chat and an AI key: reads of the chat can run. */
   canRun: boolean;
+  /** An AI key: the read can update itself from notes and memory. */
+  canSync: boolean;
   state: ReadState;
-  /** Whether the newest read's advice still matches the current notes and timeline (`key` changes whenever they do). */
+  /** Whether the read still matches what is known now (`key` changes whenever notes or the timeline do). With no read yet, stale means enough has been told to build one. */
   advice: { stale: boolean; key: string; at?: string };
 }) {
   const router = useRouter();
@@ -62,12 +77,22 @@ export function AnalysisView({ personId, history, canRun, state, advice }: {
   // Live advice: rewritten on its own when notes, the timeline or the date change. No chat re-read.
   const [adviceFailed, setAdviceFailed] = useState(false);
   const adviceNoop = useRef(false);
+  // First read being built from memory alone (no chat): shown as a placeholder, then loaded by refresh.
+  const [building, setBuilding] = useState(false);
   const adv = useObject({
-    api: `/api/people/${personId}/advice`,
-    schema: adviceSchema,
+    api: `/api/people/${personId}/model`,
+    schema: modelPatchSchema,
     fetch: async (input, init) => {
       const res = await fetch(input, init);
-      adviceNoop.current = res.status === 204; // already current (another tab refreshed it)
+      adviceNoop.current = res.status === 204; // already current (the coach or another tab updated it)
+      if (res.ok && res.headers.get("x-model-mode") === "create") {
+        // A whole new read, not a patch: wait for it to finish and be saved, then load it.
+        adviceNoop.current = true;
+        setBuilding(true);
+        await res.text().catch(() => null);
+        setBuilding(false);
+        router.refresh();
+      }
       return adviceNoop.current ? new Response("{}") : res;
     },
     onError: () => setAdviceFailed(true),
@@ -84,11 +109,11 @@ export function AnalysisView({ personId, history, canRun, state, advice }: {
   // Start by itself, once per context change.
   const triedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!advice.stale || !canRun || isLoading || triedFor.current === advice.key) return;
+    if (!advice.stale || !canSync || isLoading || triedFor.current === advice.key) return;
     triedFor.current = advice.key;
     refreshAdvice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [advice.stale, advice.key, canRun, isLoading]);
+  }, [advice.stale, advice.key, canSync, isLoading]);
 
   function run(mode: "auto" | "full") {
     adv.stop();
@@ -103,7 +128,7 @@ export function AnalysisView({ personId, history, canRun, state, advice }: {
   const viewingLatest = !selected && !isLoading && !waitingForRefresh;
   const saved = (selected ? history.find((h) => h.id === selected) : latest)?.result;
   const shown: DeepPartial<Analysis> | undefined =
-    isLoading || waitingForRefresh ? object : viewingLatest && adv.object ? { ...saved, ...adv.object } : saved;
+    isLoading || waitingForRefresh ? object : viewingLatest && adv.object ? overlay(saved, adv.object) : saved;
   const adviceStatus: AdviceStatus | undefined = viewingLatest && latest
     ? { state: adv.isLoading ? "updating" : adviceFailed && advice.stale ? "failed" : "idle", at: advice.at, refresh: refreshAdvice }
     : undefined;
@@ -142,16 +167,31 @@ export function AnalysisView({ personId, history, canRun, state, advice }: {
                 Full re-read
               </button>
             )}
-            <button className="btn-primary" disabled={!canRun || state === "current"} onClick={() => run("auto")}>
-              {state === "update" ? "Update with new messages" : state === "current" ? "Up to date" : "Analyze chat"}
-            </button>
+            {hasChat ? (
+              <button className="btn-primary" disabled={!canRun || state === "current"} onClick={() => run("auto")}>
+                {state === "update" ? "Update with new messages" : state === "current" ? "Up to date" : "Analyze chat"}
+              </button>
+            ) : (
+              <Link href={`/people/${personId}/coach`} className="btn-primary">Tell the coach more</Link>
+            )}
           </>
         )}
       </div>
 
       {!shown && !isLoading && (
         <div className="card grid place-items-center px-6 py-16 text-center text-muted">
-          {canRun ? "Hit analyze. It takes 20–60 seconds depending on chat size." : "Upload a chat to get started."}
+          {building ? (
+            <span className="animate-pulse text-mint" aria-busy>Building the read from what you&apos;ve told the coach…</span>
+          ) : canRun ? (
+            "Hit analyze. It takes 20–60 seconds depending on chat size."
+          ) : hasChat ? (
+            "Add an AI key in Settings to run a read."
+          ) : (
+            <p className="max-w-md">
+              No chat needed to start. <Link href={`/people/${personId}/coach`} className="text-heart underline-offset-4 hover:underline">Tell the coach</Link> what&apos;s
+              happened between you two, and the read builds itself here. Uploading a chat later makes it sharper.
+            </p>
+          )}
         </div>
       )}
       {isLoading && !object?.status && <div className="card h-48 animate-pulse" aria-busy />}
@@ -182,6 +222,23 @@ function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; 
         ))}
       </nav>
 
+      {advice && (advice.state !== "idle" || a.whatChanged || advice.at) && (
+        <div className="card flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 text-sm" aria-live="polite">
+          {advice.state === "updating" ? (
+            <span className="animate-pulse text-mint">Updating with what’s new…</span>
+          ) : advice.state === "failed" ? (
+            <>
+              <span className="text-amber">Something new isn’t in this read yet.</span>
+              <button className="text-heart underline-offset-4 hover:underline" onClick={advice.refresh}>Update now</button>
+            </>
+          ) : (
+            <>
+              {a.whatChanged && <span className="min-w-0 flex-1 text-muted">{a.whatChanged}</span>}
+              {advice.at && <span className="chip shrink-0">Updated {new Date(advice.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>}
+            </>
+          )}
+        </div>
+      )}
       <Group id="now" title="Where things stand">
         {a.status && (
           <div className="card flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:p-8">
@@ -327,23 +384,6 @@ function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; 
       </Group>
 
       <Group id="moves" title="What to do">
-        {advice && (advice.state !== "idle" || a.whatChanged || advice.at) && (
-          <div className="card flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 text-sm" aria-live="polite">
-            {advice.state === "updating" ? (
-              <span className="animate-pulse text-mint">Updating for your latest context…</span>
-            ) : advice.state === "failed" ? (
-              <>
-                <span className="text-amber">Your notes or timeline changed since this advice was written.</span>
-                <button className="text-heart underline-offset-4 hover:underline" onClick={advice.refresh}>Refresh advice</button>
-              </>
-            ) : (
-              <>
-                {a.whatChanged && <span className="min-w-0 flex-1 text-muted">{a.whatChanged}</span>}
-                {advice.at && <span className="chip shrink-0">Updated {new Date(advice.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>}
-              </>
-            )}
-          </div>
-        )}
         {!!a.nextMoves?.length && (
           <Block title="Next moves" tone="mint">
             <ol className="space-y-4">

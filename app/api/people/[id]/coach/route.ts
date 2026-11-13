@@ -17,7 +17,7 @@ import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
-import { FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
+import { entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { buildCoachContext, COACH_HISTORY, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
 import type { RelationId } from "@/lib/ai/prompt";
 
@@ -63,12 +63,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     db.coachMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: COACH_HISTORY }),
     getChat(person.id),
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
-    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { kind: true, text: true, happenedAt: true, deletedAt: true } }),
+    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
   // One budget for the whole context: timeline (capped), latest read, conversation, then recent chat.
   const total = CHAR_BUDGET[key.provider];
-  const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE));
+  // If memory is over budget, keep what is connected to the people and topics the user just mentioned.
+  const focus = entitiesIn(message.parts.map((p) => p.text).join(" "), facts.flatMap((f) => f.entities));
+  const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE), focus);
   const used = memory.chars + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
   const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
@@ -77,8 +79,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     msgs,
     tz: chat?.tzOffset ?? 0,
     knownFacts: allFacts.map((f) => f.text), // incl. trashed ones, so the coach doesn't re-add what the user deleted
-    saveFact: async (f) => {
-      await db.personFact.create({ data: { ...f, personId: person.id, source: "COACH" } });
+    saveFact: async (f) => (await db.personFact.create({ data: { ...f, personId: person.id, source: "COACH" }, select: { id: true } })).id,
+    facts,
+    linkFacts: async (fromId, toId, kind) => {
+      await db.memoryLink.create({ data: { fromId, toId, kind } });
+    },
+    retireFact: async (id) => {
+      await db.personFact.updateMany({ where: { id, personId: person.id, deletedAt: null }, data: { deletedAt: new Date() } });
     },
   });
 

@@ -11,15 +11,19 @@ export default async function TimelinePage({ params }: PageProps<"/people/[id]/t
   const user = await requireUser();
   const person = await getPerson(user.id, (await params).id);
   if (!person) notFound();
-  const facts = await db.personFact.findMany({
-    where: { personId: person.id, ...alive },
-    orderBy: [{ happenedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-  });
+  const [facts, links] = await Promise.all([
+    db.personFact.findMany({
+      where: { personId: person.id, ...alive },
+      orderBy: [{ happenedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    }),
+    db.memoryLink.findMany({ where: { from: { personId: person.id, ...alive }, to: { ...alive } }, select: { fromId: true, toId: true, kind: true } }),
+  ]);
   return (
     <Timeline
       personId={person.id}
       personName={person.name}
-      facts={facts.map((f) => ({ id: f.id, kind: f.kind, text: f.text, source: f.source, happenedAt: f.happenedAt?.toISOString().slice(0, 10) ?? null, createdAt: f.createdAt.toISOString() }))}
+      links={links}
+      facts={facts.map((f) => ({ id: f.id, kind: f.kind, text: f.text, source: f.source, entities: f.entities, happenedAt: f.happenedAt?.toISOString().slice(0, 10) ?? null, createdAt: f.createdAt.toISOString() }))}
     />
   );
 }

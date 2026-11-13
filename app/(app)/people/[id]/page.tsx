@@ -5,6 +5,7 @@ import { alive } from "@/lib/trash";
 import { Prisma } from "@/generated/prisma/client";
 import { currentContextHash, getChatStats, getPerson } from "@/lib/data";
 import { adviceStale } from "@/lib/context";
+import { enoughMemory } from "@/lib/model";
 import { activityWindows } from "@/lib/stats";
 import { ChatUploader } from "@/components/chat-uploader";
 import { AnalysisView, type ReadState } from "@/components/analysis-view";
@@ -15,11 +16,12 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   const person = await getPerson(user.id, (await params).id);
   if (!person) notFound();
 
-  const [chat, analyses, keyCount, context] = await Promise.all([
+  const [chat, analyses, keyCount, context, factCount] = await Promise.all([
     db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
     db.analysis.findMany({ where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
     db.apiKey.count({ where: { userId: user.id } }),
     currentContextHash(person),
+    db.personFact.count({ where: { personId: person.id, ...alive } }),
   ]);
   const stats = chat ? await getChatStats(chat) : null;
   const recent = stats ? activityWindows(stats) : null;
@@ -57,13 +59,15 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
       )}
       {!chat && <ChatUploader personId={person.id} personName={person.name} existing={null} />}
 
-      {!keyCount && <p className="card p-5 text-sm text-amber">Add an AI key in Settings to run analyses.</p>}
+      {!keyCount && <p className="card p-5 text-sm text-amber">Add an AI key in Settings to run reads and talk to the coach.</p>}
 
       <AnalysisView
         personId={person.id}
         state={readState}
+        hasChat={!!chat}
         canRun={!!chat && keyCount > 0}
-        advice={{ stale: !!last && !!chat && adviceStale(last, context), key: context, at: last?.adviceAt?.toISOString() }}
+        canSync={keyCount > 0}
+        advice={{ stale: last ? adviceStale(last, context) : enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}
         history={analyses.map((a) => ({ id: a.id, createdAt: a.createdAt.toISOString(), model: a.model, mode: a.mode, result: a.result as Analysis }))}
       />
     </div>

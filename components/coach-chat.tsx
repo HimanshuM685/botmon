@@ -6,6 +6,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { toast } from "sonner";
 import { renameThread, trashItem } from "@/app/actions";
+import { syncModel, type ModelSync } from "@/lib/model-sync";
 import { ConfirmButton } from "./confirm-button";
 
 type Thread = { id: string; title: string; updatedAt: string };
@@ -66,8 +67,14 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
     messages: initialMessages,
     transport,
     onError: (e) => toast.error(errorText(e)),
-
+    // The coach saved or corrected a memory: bring the read up to date in the background, no re-read.
+    onFinish: async ({ message }) => {
+      if (!changedMemory(message)) return;
+      setProfile({ status: "running" });
+      setProfile(await syncModel(personId));
+    },
   });
+  const [profile, setProfile] = useState<ModelSync | { status: "running" } | null>(null);
 
   const busy = status === "submitted" || status === "streaming";
 
@@ -159,7 +166,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
               <div>
                 <p className="display text-2xl">Talk it through.</p>
                 <p className="mx-auto mt-2 max-w-sm text-sm text-muted">
-                  Tell me what happened with {personName}. I know your chat, the read and everything on the timeline.
+                  Tell me what happened with {personName}. I remember what you tell me and keep their read up to date, with or without a chat.
                 </p>
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
                   {starters(personName.split(" ")[0]).map((s) => (
@@ -173,6 +180,20 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
           )}
           {messages.map((m) => <Message key={m.id} m={m} />)}
           {status === "submitted" && <p className="text-sm text-dim">Thinking…</p>}
+          {profile && profile.status !== "current" && (
+            <p className="text-xs text-dim" aria-live="polite">
+              {profile.status === "running" ? (
+                <span className="animate-pulse">Updating {personName}&apos;s read with this…</span>
+              ) : profile.status === "failed" ? (
+                <>Couldn&apos;t update the read{profile.error ? `: ${profile.error}` : ""}. It will catch up when you open it.</>
+              ) : (
+                <>
+                  <span className="text-mint">{profile.status === "created" ? "Read created from what you've told me." : "Read updated."}</span>{" "}
+                  {profile.whatChanged} <Link href={`/people/${personId}`} className="text-heart underline-offset-4 hover:underline">Open the read</Link>
+                </>
+              )}
+            </p>
+          )}
           {error && !busy && <p className="text-sm text-heart">{errorText(error)}</p>}
         </div>
 
@@ -207,6 +228,15 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
   );
 }
 
+/** Did this assistant turn save or correct a memory? */
+function changedMemory(m: UIMessage) {
+  return m.parts.some((p) => {
+    if (!("state" in p) || p.state !== "output-available") return false;
+    const out = p.output as { saved?: boolean; updated?: boolean } | undefined;
+    return (p.type === "tool-remember" && !!out?.saved) || (p.type === "tool-correct" && !!out?.updated);
+  });
+}
+
 function Message({ m }: { m: UIMessage }) {
   const mine = m.role === "user";
   return (
@@ -218,6 +248,11 @@ function Message({ m }: { m: UIMessage }) {
             const out = p.output as { saved?: boolean; text?: string };
             return out?.saved ? <p key={i} className="chip border-mint/40 text-mint">Saved to timeline: {out.text}</p> : null;
           }
+          if (p.type === "tool-correct" && p.state === "output-available") {
+            const out = p.output as { updated?: boolean; retired?: string; saved?: string };
+            return out?.updated ? <p key={i} className="chip border-amber/40 text-amber">Memory corrected: {out.saved ?? `removed “${out.retired}”`}</p> : null;
+          }
+          if (p.type === "tool-recall" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Checking what I remember…</p>;
           if (p.type === "tool-searchChat" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Looking through your chat…</p>;
           return null;
         })}

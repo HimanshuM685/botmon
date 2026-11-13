@@ -13,7 +13,7 @@ export async function GET() {
     include: {
       chats: true,
       analyses: { orderBy: { createdAt: "asc" } },
-      facts: { orderBy: { createdAt: "asc" } },
+      facts: { orderBy: { createdAt: "asc" }, include: { linksFrom: { select: { toId: true, kind: true } } } },
       threads: { orderBy: { createdAt: "asc" }, include: { messages: { orderBy: { createdAt: "asc" } } } },
     },
   });

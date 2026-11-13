@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { buildAdvicePrompt, buildPrompt, INCREMENTAL_CONTEXT } from "./prompt";
+import { buildMemoryReadPrompt, buildModelPatchPrompt, buildPrompt, INCREMENTAL_CONTEXT } from "./prompt";
 import { computeStats } from "../stats";
 import type { Analysis } from "./schema";
 
@@ -28,21 +28,35 @@ it("full re-read carries the prior read as an anchor and flags thin chats", () =
   expect(buildPrompt(base)).not.toContain("Limited evidence");
 });
 
-it("advice refresh carries current notes, memory and date, the settled read, and only the tail of the chat", () => {
+it("model update carries what changed, the current read, and only the tail of the chat", () => {
   const read = { status: { label: "Warm", explanation: "x" }, nextMoves: [{ action: "old move", why: "", when: "" }], messageSuggestions: ["old text"] } as unknown as Analysis;
-  const p = buildAdvicePrompt({
+  const p = buildModelPatchPrompt({
     ...base,
     notes: "we had a fight yesterday",
     facts: [{ kind: "EVENT", text: "She got a new job", happenedAt: null }],
+    added: [{ kind: "EVENT", text: "She got a new job", happenedAt: null }],
+    removed: [{ kind: "FACT", text: "Has a boyfriend", happenedAt: null }],
     now: Date.UTC(2027, 0, 5),
     read,
   });
   expect(p).toContain("we had a fight yesterday");
-  expect(p).toContain("She got a new job");
   expect(p).toContain("Today is 2027-01-05");
   const part = (tag: string) => p.split(`<${tag}>`)[1].split(`</${tag}>`)[0];
   expect(part("read")).toContain('"label":"Warm"');
-  expect(part("read")).not.toContain("old move"); // advice is not part of the settled read
+  expect(part("read")).not.toContain("old move"); // advice is shown separately
   expect(part("previous_advice")).toContain("old move");
+  expect(part("new_information")).toContain("She got a new job");
+  expect(part("new_information")).toMatch(/No longer true[\s\S]*Has a boyfriend/);
   expect(part("recent_chat").trim().split("\n")).toHaveLength(INCREMENTAL_CONTEXT);
+});
+
+it("works without a chat: no stats, no chat section, memory as the evidence", () => {
+  const noChat = { personName: "Riya", relation: "CRUSH" as const, gender: "FEMALE", notes: "met at college", tzOffsetMin: 0, facts: [{ kind: "EVENT", text: "We had coffee", happenedAt: null }] };
+  const create = buildMemoryReadPrompt(noChat);
+  expect(create).toContain("no chat export");
+  expect(create).toContain("We had coffee");
+  expect(create).not.toContain("Computed stats");
+  const patch = buildModelPatchPrompt({ ...noChat, read: prevResult, msgs: [], added: [], removed: [] });
+  expect(patch).not.toContain("<recent_chat>");
+  expect(patch).toContain("No single memory is marked as new");
 });

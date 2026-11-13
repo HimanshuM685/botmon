@@ -26,9 +26,9 @@ it("searchChat finds old details newest-first; remember de-dupes", async () => {
   const saved: string[] = [];
   const tools = coachTools({ msgs, tz: 0, knownFacts: ["Loves coffee"], saveFact: async (f) => void saved.push(f.text) });
   const run = (input: object) => (tools.remember.execute as unknown as (i: object, o: object) => Promise<{ saved: boolean }>)(input, {});
-  expect((await run({ kind: "PREFERENCE", text: "loves coffee!", happenedAt: "" })).saved).toBe(false);
-  expect((await run({ kind: "EVENT", text: "Had a fight about plans", happenedAt: "2026-11-10" })).saved).toBe(true);
-  expect((await run({ kind: "EVENT", text: "had a fight about plans", happenedAt: "" })).saved).toBe(false);
+  expect((await run({ kind: "PREFERENCE", text: "loves coffee!", happenedAt: "", about: [] })).saved).toBe(false);
+  expect((await run({ kind: "EVENT", text: "Had a fight about plans", happenedAt: "2026-11-10", about: ["Our Fight"] })).saved).toBe(true);
+  expect((await run({ kind: "EVENT", text: "had a fight about plans", happenedAt: "", about: [] })).saved).toBe(false);
   expect(saved).toEqual(["Had a fight about plans"]);
 });
 
@@ -38,4 +38,29 @@ it("trash keeps items 30 days", () => {
   expect(purgeDate(deleted).toISOString().slice(0, 10)).toBe("2026-12-01");
   expect(daysLeft(deleted, now)).toBe(1);
   expect(purgeCutoff(now).toISOString().slice(0, 10)).toBe("2026-10-31");
+});
+
+it("correct retires the matching memory and saves the new truth", async () => {
+  const saved: string[] = [], retired: string[] = [], links: string[] = [];
+  const fact = (id: string, text: string, entities: string[]) => ({ id, text, entities, kind: "FACT", happenedAt: null });
+  const tools = coachTools({
+    msgs: [], tz: 0, knownFacts: ["Has a boyfriend", "Loves sushi"],
+    facts: [fact("f1", "Has a boyfriend", ["boyfriend"]), fact("f2", "Loves sushi", ["food"]), fact("f3", "Her boyfriend lives in Pune", ["boyfriend", "pune"])],
+    saveFact: async (f) => {
+      saved.push(`${f.text} {${f.entities.join(",")}}`);
+      return "new1";
+    },
+    retireFact: async (id) => void retired.push(id),
+    linkFacts: async (from, to, kind) => void links.push(`${from} ${kind} ${to}`),
+  });
+  const recall = (about: string) => (tools.recall.execute as unknown as (i: object, o: object) => Promise<string>)({ about }, {});
+  expect(await recall("Boyfriend")).toContain("lives in Pune");
+  expect(await recall("cricket")).toBe("Nothing in memory about that.");
+  const run = (input: object) => (tools.correct.execute as unknown as (i: object, o: object) => Promise<{ updated: boolean; saved?: string }>)(input, {});
+  expect(await run({ old: "has a boyfriend.", replacement: "Broke up with her boyfriend in November", kind: "EVENT", happenedAt: "" })).toMatchObject({ updated: true, saved: "Broke up with her boyfriend in November" });
+  expect(await run({ old: "Has a boyfriend", replacement: "", kind: "FACT", happenedAt: "" })).toMatchObject({ updated: false }); // already retired
+  expect(await run({ old: "loves sushi", replacement: "", kind: "PREFERENCE", happenedAt: "" })).toMatchObject({ updated: true });
+  expect(retired).toEqual(["f1", "f2"]);
+  expect(saved).toEqual(["Broke up with her boyfriend in November {boyfriend}"]); // inherits the old memory's connections
+  expect(links).toEqual(["new1 updates f1"]);
 });

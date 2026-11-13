@@ -4,26 +4,56 @@ import { useActionState, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { saveFact, trashItem, type ActionState } from "@/app/actions";
+import { syncModel } from "@/lib/model-sync";
 import { ConfirmButton } from "./confirm-button";
+import { MemoryMap, type MapLink } from "./memory-map";
 
-type Fact = { id: string; kind: string; text: string; source: string; happenedAt: string | null; createdAt: string };
+/** After the timeline changes, bring the read up to date in the background (no chat re-read). */
+function updateRead(personId: string) {
+  void syncModel(personId).then((r) => {
+    if (r.status === "updated" || r.status === "created") toast.success(r.status === "created" ? "Read created from the timeline" : "Read updated", { description: r.whatChanged });
+  });
+}
+
+type Fact = { id: string; kind: string; text: string; source: string; entities: string[]; happenedAt: string | null; createdAt: string };
 
 const KINDS = { EVENT: "Event", FACT: "Fact", PREFERENCE: "Preference", DATE: "Date" } as const;
 const SOURCE = { ANALYSIS: "from a read", COACH: "from coach", USER: "added by you" } as const;
 const DOT: Record<string, string> = { EVENT: "bg-heart", FACT: "bg-paper", PREFERENCE: "bg-mint", DATE: "bg-amber" };
 
-export function Timeline({ personId, personName, facts }: { personId: string; personName: string; facts: Fact[] }) {
+export function Timeline({ personId, personName, facts, links }: { personId: string; personName: string; facts: Fact[]; links: MapLink[] }) {
   const [filter, setFilter] = useState<string>("ALL");
   const [editing, setEditing] = useState<string | null>(null);
-  const shown = filter === "ALL" ? facts : facts.filter((f) => f.kind === filter);
+  const [view, setView] = useState<"list" | "map">("list");
+  // A person, place or topic picked on the map (or by clicking a tag): only memories about it are listed.
+  const [entity, setEntity] = useState<string | null>(null);
+  const shown = facts.filter((f) => (filter === "ALL" || f.kind === filter) && (!entity || f.entities.includes(entity)));
 
   return (
     <div className="space-y-8">
       <section className="card p-6 sm:p-8">
         <h2 className="display text-2xl">Add to {personName}&apos;s timeline</h2>
-        <p className="mb-5 mt-1 text-sm text-muted">Reads and the coach add details automatically. Everything here is used in future reads and chats.</p>
+        <p className="mb-5 mt-1 text-sm text-muted">Reads and the coach add details automatically. Anything you add or change here updates the read by itself.</p>
         <FactForm personId={personId} />
       </section>
+
+      <div className="flex gap-1 border-b border-line" role="tablist" aria-label="View">
+        {(["list", "map"] as const).map((v) => (
+          <button key={v} role="tab" aria-selected={view === v} onClick={() => setView(v)}
+            className={`-mb-px border-b-2 px-4 py-2 text-sm transition ${view === v ? "border-heart text-paper" : "border-transparent text-muted hover:text-paper"}`}>
+            {v === "list" ? "List" : "Map"}
+          </button>
+        ))}
+      </div>
+
+      {view === "map" && <MemoryMap name={personName} facts={facts} links={links} selected={entity} onSelect={setEntity} />}
+
+      {entity && (
+        <p className="text-sm text-muted">
+          Showing memories about <span className="chip border-heart/50 text-paper">{entity}</span>{" "}
+          <button className="text-heart underline-offset-4 hover:underline" onClick={() => setEntity(null)}>Show all</button>
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Filter">
         {["ALL", ...Object.keys(KINDS)].map((k) => (
@@ -53,9 +83,19 @@ export function Timeline({ personId, personName, facts }: { personId: string; pe
                         {f.happenedAt && ` · ${new Date(f.happenedAt).toLocaleDateString(undefined, { dateStyle: "medium", timeZone: "UTC" })}`}
                         {` · ${SOURCE[f.source as keyof typeof SOURCE]}`}
                       </p>
+                      {f.entities.length > 0 && (
+                        <p className="mt-2 flex flex-wrap gap-1.5">
+                          {f.entities.map((e) => (
+                            <button key={e} onClick={() => setEntity(entity === e ? null : e)} aria-pressed={entity === e}
+                              className={`rounded-full border px-2 py-0.5 text-xs transition ${entity === e ? "border-heart text-paper" : "border-line text-dim hover:text-paper"}`}>
+                              {e}
+                            </button>
+                          ))}
+                        </p>
+                      )}
                     </div>
                     <button className="text-xs text-muted hover:text-paper" onClick={() => setEditing(f.id)}>Edit</button>
-                    <DeleteFact id={f.id} />
+                    <DeleteFact id={f.id} personId={personId} />
                   </div>
                 )}
               </div>
@@ -67,7 +107,7 @@ export function Timeline({ personId, personName, facts }: { personId: string; pe
   );
 }
 
-function DeleteFact({ id }: { id: string }) {
+function DeleteFact({ id, personId }: { id: string; personId: string }) {
   const router = useRouter();
   return (
     <ConfirmButton
@@ -79,6 +119,7 @@ function DeleteFact({ id }: { id: string }) {
       onDone={() => {
         toast.success("Moved to trash");
         router.refresh();
+        updateRead(personId);
       }}
     >
       Delete
@@ -95,16 +136,21 @@ function FactForm({ personId, fact, onDone }: { personId: string; fact?: Fact; o
     if (state?.ok) {
       toast.success("Saved");
       onDone?.();
+      updateRead(personId);
     }
-  }, [state, onDone]);
+  }, [state, onDone, personId]);
 
   return (
-    <form action={(fd) => { action(fd); if (!fact) setText(""); }} className="grid gap-3 sm:grid-cols-[1fr_160px_160px_auto] sm:items-end">
+    <form action={(fd) => { action(fd); if (!fact) setText(""); }} className="grid gap-3 sm:grid-cols-[1fr_160px_150px_150px_auto] sm:items-end">
       <input type="hidden" name="personId" value={personId} />
       {fact && <input type="hidden" name="id" value={fact.id} />}
       <div>
         <label className="label" htmlFor={`text-${fact?.id ?? "new"}`}>What</label>
         <input id={`text-${fact?.id ?? "new"}`} name="text" className="input" required maxLength={1000} value={text} onChange={(e) => setText(e.target.value)} placeholder="Got her dream internship" />
+      </div>
+      <div>
+        <label className="label" htmlFor={`about-${fact?.id ?? "new"}`}>About</label>
+        <input id={`about-${fact?.id ?? "new"}`} name="entities" className="input" maxLength={300} defaultValue={fact?.entities.join(", ") ?? ""} placeholder="sister, job" title="Tags, separated by commas. Memories with the same tag are connected." />
       </div>
       <div>
         <label className="label" htmlFor={`kind-${fact?.id ?? "new"}`}>Type</label>

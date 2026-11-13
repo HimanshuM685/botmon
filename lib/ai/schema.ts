@@ -73,6 +73,7 @@ export const analysisSchema = z.object({
         fact: z.string().describe("One concrete detail: names, places, family, work/study, health, plans, preferences, past events"),
         category: z.enum(["family", "friends", "work", "study", "health", "preference", "plan", "event", "other"]),
         when: z.string().describe("Date or period if known (YYYY-MM-DD preferred), else empty string"),
+        about: z.array(z.string()).describe("1-4 short tags for who or what this is about, reused across facts so related ones connect: e.g. 'sister riya', 'job', 'mumbai trip', 'sushi'. Not the person themself."),
       }),
     )
     .describe("Every concrete detail worth remembering about them. Be exhaustive; this becomes long-term memory."),
@@ -101,13 +102,25 @@ export const analysisSchema = z.object({
   avoid: z.array(z.string()).describe("2-5 things the user should stop or avoid doing"),
 });
 
-/** The live part of a read: rewritten on its own whenever notes, the timeline or the date change (no chat re-read). */
-export const adviceSchema = z.object({
-  whatChanged: z.string().describe("1-2 sentences: what in the current notes, memory or timing shaped this advice. Empty string if nothing beyond the chat."),
-  ...analysisSchema.pick({ openThreads: true, thingsToCareAbout: true, nextMoves: true, messageSuggestions: true, conversationStarters: true, avoid: true }).shape,
+const advice = analysisSchema.pick({ openThreads: true, thingsToCareAbout: true, nextMoves: true, messageSuggestions: true, conversationStarters: true, avoid: true }).shape;
+/** Advice is rewritten on every model update; these judgement sections only when new information moves them. */
+export const ADVICE_KEYS = ["whatChanged", ...Object.keys(advice)] as ("whatChanged" | keyof typeof advice)[];
+export const PATCH_SECTIONS = ["status", "signals", "mind", "emotional"] as const;
+const unchanged = "null when the new information does not change it (it is kept as is)";
+
+/**
+ * A model update: what the living read looks like after new notes, memories or time passing. No chat re-read.
+ * Sections come before advice so the advice is written from the updated picture.
+ */
+export const modelPatchSchema = z.object({
+  whatChanged: z.string().describe("1-2 sentences: which new information you used and which parts of the read it moved. Empty string if nothing beyond the chat."),
+  status: analysisSchema.shape.status.nullable().describe(`Where things stand now, or ${unchanged}`),
+  signals: signalsSchema.nullable().describe(`All seven signals re-rated with the new information as evidence, or ${unchanged}`),
+  mind: analysisSchema.shape.mind.nullable().describe(`Their inner world now, or ${unchanged}`),
+  emotional: analysisSchema.shape.emotional.nullable().describe(`Their mood, triggers and comforts now, or ${unchanged}`),
+  ...advice,
 });
-export type Advice = z.infer<typeof adviceSchema>;
-export const ADVICE_KEYS = Object.keys(adviceSchema.shape) as (keyof Advice)[];
+export type ModelPatch = z.infer<typeof modelPatchSchema>;
 
 type Generated = z.infer<typeof analysisSchema>;
 /** `status.score` is computed in code after generation (older saved reads carry the model's own score there). */

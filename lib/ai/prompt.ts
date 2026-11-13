@@ -59,28 +59,35 @@ export function fitToBudget(msgs: Msg[], budget: number, tzOffsetMin = 0) {
   return { lines: out.reverse(), trimmed: msgs.length - out.length };
 }
 
+type Fact = { kind: string; text: string; happenedAt: Date | null };
 type HeaderInput = {
   personName: string;
   relation: RelationId;
   gender: string;
   notes: string | null;
-  myName: string;
-  theirName: string;
-  stats: ChatStats;
+  /** Absent when the person has no chat export: everything known then comes from the user. */
+  myName?: string;
+  theirName?: string;
+  stats?: ChatStats | null;
   tzOffsetMin: number;
   now?: number;
-  facts?: { kind: string; text: string; happenedAt: Date | null }[];
+  facts?: Fact[];
 };
 
-/** Who is who, the user's notes, memory and exact stats. Shared by full reads and advice refreshes. */
+/** Who is who, the user's notes, memory and exact stats. Shared by reads and model updates. */
 function header(p: HeaderInput) {
   const s = p.stats;
-  const w = activityWindows(s, p.now);
   const today = toLocal(p.now ?? Date.now(), p.tzOffsetMin).toISOString().slice(0, 10);
-  return `The user is "${p.myName}" in the chat. The other person is "${p.theirName}" (${p.personName}), the user's ${RELATIONS[p.relation].toLowerCase()} (${p.gender.toLowerCase()}).
+  const who = s
+    ? `The user is "${p.myName}" in the chat. The other person is "${p.theirName}" (${p.personName}), the user's ${RELATIONS[p.relation].toLowerCase()} (${p.gender.toLowerCase()}).`
+    : `The other person is ${p.personName}, the user's ${RELATIONS[p.relation].toLowerCase()} (${p.gender.toLowerCase()}). There is no chat export: everything known comes from what the user told you (their notes and the memory list).`;
+  const memory = `${p.notes ? `Context from the user: ${p.notes}\n` : ""}
+${p.facts?.length ? `What is already known about them (memory from earlier reads, the coach and the user):\n${factsForPrompt(p.facts)}\n\n` : ""}`;
+  if (!s) return `${who}\nFocus: ${FOCUS[p.relation]}\n${memory}Today is ${today}.`;
+  const w = activityWindows(s, p.now);
+  return `${who}
 Focus: ${FOCUS[p.relation]}
-${p.notes ? `Context from the user: ${p.notes}\n` : ""}
-${p.facts?.length ? `What is already known about them (memory from earlier reads, the coach and the user):\n${factsForPrompt(p.facts)}\n\n` : ""}Computed stats (exact, trust these over your own counting):
+${memory}Computed stats (exact, trust these over your own counting):
 - ${s.total} messages over ${s.days} days. User sent ${s.mine}, they sent ${s.theirs}.
 - They start ${s.theyInitiatePct}% of conversations (a new conversation = 6h+ gap).
 - Median reply time: user ${s.myMedianReplyMin ?? "?"} min, them ${s.theirMedianReplyMin ?? "?"} min.
@@ -91,30 +98,52 @@ ${p.facts?.length ? `What is already known about them (memory from earlier reads
 }
 
 /**
- * Advice-only refresh: the saved read is the settled picture of the chat; only the advice is rewritten
- * for the current notes, memory and date. Sends the last few messages, never the whole chat.
+ * Model update: the saved read is the current picture; new memories, notes and the date may move parts of it.
+ * Sends what changed plus the last few chat messages, never the whole chat.
  */
-export function buildAdvicePrompt(p: HeaderInput & { read: Analysis; msgs: Msg[] }) {
-  const profile = Object.fromEntries(Object.entries(p.read).filter(([k]) => !ADVICE_KEYS.includes(k as (typeof ADVICE_KEYS)[number])));
-  const previous = Object.fromEntries(ADVICE_KEYS.map((k) => [k, p.read[k]]));
+export function buildModelPatchPrompt(p: HeaderInput & { read: Analysis; msgs: Msg[]; added: Fact[]; removed: Fact[] }) {
+  const isAdvice = (k: string) => (ADVICE_KEYS as string[]).includes(k);
+  const picture = Object.fromEntries(Object.entries(p.read).filter(([k]) => !isAdvice(k)));
+  const previous = Object.fromEntries(Object.entries(p.read).filter(([k]) => isAdvice(k)));
+  const diff = p.added.length || p.removed.length
+    ? `${p.added.length ? `New or edited since your last update:\n${factsForPrompt(p.added)}\n` : ""}${p.removed.length ? `No longer true (the user removed these):\n${factsForPrompt(p.removed)}\n` : ""}`
+    : "No single memory is marked as new: re-check the read against the user's current notes, the full memory list and today's date.\n";
   return `${header(p)}
 
-Your settled read of the chat (do not re-judge it):
+Your current read of this person:
 <read>
-${JSON.stringify(profile)}
+${JSON.stringify(picture)}
 </read>
 
-The advice you gave earlier:
+The advice you gave last time:
 <previous_advice>
 ${JSON.stringify(previous)}
 </previous_advice>
 
+<new_information>
+${diff}</new_information>
+${p.msgs.length ? `
 The last messages of the chat, for tone and where it left off:
 <recent_chat>
 ${p.msgs.slice(-INCREMENTAL_CONTEXT).map((m) => fmtLine(m, p.tzOffsetMin)).join("\n")}
 </recent_chat>
+` : ""}
+Update the read for the situation as of today. The user's notes and memory are the newest information and may describe things that happened outside or after the chat (talks in person, calls, fights, plans, replies). Where they conflict with the chat, they win.
+- status, signals, mind, emotional: return each one re-written ONLY if the new information really changes it. Otherwise return null for it. A small detail (a food they like) changes none of them; an event between the two of them (a fight, a confession, a great day together, going silent, a boundary) usually changes several. When you re-rate signals, use the new information as evidence and keep the anchors.
+- Advice (next moves, message suggestions, starters, keep in mind, avoid, open threads): always return it in full, fitted to today. Keep what still fits; replace what is outdated, already done or contradicted. Account for the days passed since the last message.
+- whatChanged: say plainly which new information you used and what it moved.`;
+}
 
-Rewrite ONLY the advice so it fits the situation as of today: the user's notes and the memory list above are the newest information and may describe things that happened after the chat (talks in person, calls, fights, plans, replies). Where they conflict with the chat, they win. Account for how many days have passed since the last message. Keep earlier advice that still fits; replace what is now outdated, already done, or contradicted. In whatChanged, say plainly which new context you used.`;
+/** First read for a person with no chat: built only from what the user told the coach, their notes and the timeline. */
+export function buildMemoryReadPrompt(p: HeaderInput) {
+  return `${header(p)}
+
+Build the read from the memory list and notes above. They are the user's own account, so:
+- observations: use memory items as the evidence. "when" is the item's date or "reported by user"; "quote" is the item, close to how it was written.
+- This is one side of the story. Set confidence to "low", keep signal levels at 1-2 unless something is unmistakable, and say in the explanation that the read will sharpen as the user shares more or uploads a chat.
+- Do not invent chat behaviour (reply times, texting style, emoji) that nothing above supports; say "not enough signal" in those fields instead.
+- keyFacts and importantDates: return empty lists; these details are already saved.
+- Write message suggestions in a natural, neutral texting style, since the user's own style is not known yet.`;
 }
 
 export function buildPrompt(p: {
@@ -144,7 +173,7 @@ ${isThinChat(s) ? `\nLimited evidence: only ${s.total} messages over ${s.days} d
 
 function anchorSection(prior: Analysis) {
   return `
-A previous read of this same chat:
+A previous read of this person (from this chat, or from what the user told you before a chat was uploaded):
 <prior_read>
 ${JSON.stringify(prior)}
 </prior_read>

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { factsFromAnalysis, newFacts } from "./facts";
+import { entitiesIn, factsForPrompt, factsFromAnalysis, factsWithinBudget as within, newFacts, toEntities } from "./facts";
 
 it("turns keyFacts and importantDates into typed facts", () => {
   const facts = factsFromAnalysis({
@@ -29,4 +29,21 @@ it("factsWithinBudget keeps the latest facts that fit", async () => {
   expect(chars).toBeLessThanOrEqual(600);
   expect(kept.at(-1)!.text).toContain("fact number 99");
   expect(kept.length).toBeLessThan(100);
+});
+
+it("normalises entity tags so related memories connect", () => {
+  expect(toEntities(["Sister Riya!", "sister  riya", " ", "Job", "a", undefined])).toEqual(["sister riya", "job"]);
+  const [f] = factsFromAnalysis({ keyFacts: [{ fact: "Her sister Riya is getting married", category: "family", when: "", about: ["Sister Riya", "wedding"] }] });
+  expect(f.entities).toEqual(["sister riya", "wedding"]);
+  expect(factsForPrompt([f])).toBe("- [fact] Her sister Riya is getting married {about: sister riya, wedding}");
+  expect(entitiesIn("what should I get for Riya's wedding?", ["wedding", "sister riya", "job"])).toEqual(["wedding"]);
+});
+
+it("over budget, keeps memories connected to the focus before newer unrelated ones", () => {
+  const facts = Array.from({ length: 50 }, (_, i) => ({ kind: "FACT", text: `fact number ${i} padded to some length`, happenedAt: null, entities: i === 2 || i === 5 ? ["wedding"] : ["misc"] }));
+  const { facts: kept, chars } = within(facts, 400, ["wedding"]);
+  expect(chars).toBeLessThanOrEqual(400);
+  expect(kept.slice(0, 2).map((f) => f.text)).toEqual([facts[2].text, facts[5].text]); // old but connected, original order kept
+  expect(kept.at(-1)!.text).toContain("fact number 49");
+  expect(within(facts, 1e6, ["wedding"]).facts).toHaveLength(50);
 });

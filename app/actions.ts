@@ -1,6 +1,7 @@
 "use server";
 
 import { generateText } from "ai";
+import { toEntities } from "@/lib/facts";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -197,6 +198,8 @@ const factSchema = z.object({
   text: z.string().trim().min(1, "Write something").max(1000),
   kind: z.enum(["FACT", "EVENT", "DATE", "PREFERENCE"]),
   happenedAt: z.string().optional().transform((s) => (s ? new Date(s) : null)).refine((d) => !d || !Number.isNaN(d.getTime()), "Invalid date"),
+  // Comma-separated tags ("sister, wedding"): what connects this memory to others.
+  entities: z.string().max(300).optional().transform((s) => toEntities((s ?? "").split(","))),
 });
 
 export async function saveFact(_: ActionState, form: FormData): Promise<ActionState> {
