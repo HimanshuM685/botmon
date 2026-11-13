@@ -2,11 +2,11 @@ import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { getActiveKey, getPerson, loadChat } from "@/lib/data";
-import { computeStats } from "@/lib/stats";
 import { analysisSchema } from "@/lib/ai/schema";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
+import type { ChatStats } from "@/lib/stats";
 
 export const maxDuration = 300;
 const HOURLY_LIMIT = 10;
@@ -17,14 +17,21 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const person = await getPerson(userId, (await params).id);
   if (!person) return Response.json({ error: "Not found" }, { status: 404 });
 
-  const [key, chat, recent] = await Promise.all([
+  const [key, chat] = await Promise.all([
     getActiveKey(userId),
     db.chatUpload.findFirst({ where: { personId: person.id }, orderBy: { createdAt: "desc" } }),
-    db.analysis.count({ where: { person: { userId }, createdAt: { gt: new Date(Date.now() - 3600_000) } } }),
   ]);
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
   if (!chat) return Response.json({ error: "Upload a chat first" }, { status: 400 });
-  if (recent >= HOURLY_LIMIT) return Response.json({ error: "Hourly limit reached. Try again later." }, { status: 429 });
+
+  // Record the attempt first, then count: concurrent requests all see each other's rows,
+  // and failed or aborted runs still count toward the limit.
+  const run = await db.analysis.create({ data: { personId: person.id, provider: key.provider, model: key.model } });
+  const recent = await db.analysis.count({ where: { person: { userId }, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
+  if (recent > HOURLY_LIMIT) {
+    await db.analysis.delete({ where: { id: run.id } });
+    return Response.json({ error: "Hourly limit reached. Try again later." }, { status: 429 });
+  }
 
   const msgs = await loadChat(chat.cipher);
   const prompt = buildPrompt({
@@ -34,7 +41,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     notes: person.notes,
     myName: chat.myName,
     theirName: chat.theirName,
-    stats: computeStats(msgs, chat.myName),
+    stats: chat.stats as unknown as ChatStats,
+    tzOffsetMin: chat.tzOffset,
     msgs,
     budget: CHAR_BUDGET[key.provider],
   });
@@ -73,7 +81,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         // Save before closing so the client's refresh sees it. Invalid/partial JSON throws and is not saved.
         try {
           const output = await result.output;
-          await db.analysis.create({ data: { personId: person.id, provider: key.provider, model: key.model, result: output } });
+          await db.analysis.update({ where: { id: run.id }, data: { result: output } });
         } catch (e) {
           console.error("analysis not saved", (e as Error)?.message);
         }

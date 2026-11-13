@@ -13,6 +13,7 @@ export const chatPayloadSchema = z.object({
   source: z.enum(["WHATSAPP", "INSTAGRAM", "PASTE"]),
   myName: z.string().min(1).max(200),
   theirName: z.string().min(1).max(200),
+  tzOffset: z.number().int().min(-14 * 60).max(14 * 60),
   messages: z
     .array(z.object({ sender: z.string().max(200), text: z.string().max(20_000), ts: z.number().int().positive() }))
     .min(10, "Need at least 10 messages for a useful analysis")

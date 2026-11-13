@@ -85,6 +85,10 @@ model ChatUpload {
   lastAt    DateTime
   myName    String
   theirName String
+  /// ChatStats computed at upload (lib/stats.ts)
+  stats     Json
+  /// Uploader's Date#getTimezoneOffset(), minutes
+  tzOffset  Int        @default(0)
   createdAt DateTime   @default(now())
   person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
 
@@ -96,7 +100,8 @@ model Analysis {
   personId  String
   provider  Provider
   model     String
-  result    Json
+  /// null while running or if the run failed; every row counts toward the hourly limit
+  result    Json?
   createdAt DateTime @default(now())
   person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
 

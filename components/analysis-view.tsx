@@ -19,32 +19,50 @@ function errorText(e: Error) {
 
 export function AnalysisView({ personId, history, canRun }: { personId: string; history: Saved[]; canRun: boolean }) {
   const router = useRouter();
-  const [selected, setSelected] = useState(history[0]?.id);
-  const { object, submit, isLoading, stop } = useObject({
+  // null = follow the newest saved analysis
+  const [selected, setSelected] = useState<string | null>(null);
+  // Newest history id when the current run started; the live object is shown until a newer one arrives via refresh.
+  const [baseline, setBaseline] = useState<string | undefined | null>(null);
+  const { object, submit, isLoading, stop, clear } = useObject({
     api: `/api/people/${personId}/analyze`,
     schema: analysisSchema,
-    onError: (e) => toast.error(errorText(e)),
+    onError: (e) => {
+      toast.error(errorText(e));
+      clear();
+    },
     onFinish: ({ error }) => {
-      if (error) toast.error("The model returned an incomplete answer. Try again or switch model in Settings.");
-      else router.refresh();
+      if (error) {
+        toast.error("The model returned an incomplete answer. Try again or switch model in Settings.");
+        clear();
+        setBaseline(null);
+      } else router.refresh();
     },
   });
 
-  const shown: DeepPartial<Analysis> | undefined = isLoading || object ? object : history.find((h) => h.id === selected)?.result;
+  function run() {
+    setSelected(null);
+    setBaseline(history[0]?.id);
+    submit({});
+  }
+
+  const latest = history[0];
+  const waitingForRefresh = object && baseline !== null && latest?.id === baseline;
+  const shown: DeepPartial<Analysis> | undefined =
+    isLoading || waitingForRefresh ? object : (selected ? history.find((h) => h.id === selected) : latest)?.result;
 
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="display mr-auto text-3xl">The read</h2>
         {history.length > 1 && !isLoading && (
-          <select aria-label="Past analyses" className="input h-9 w-auto" value={selected} onChange={(e) => setSelected(e.target.value)}>
+          <select aria-label="Past analyses" className="input h-9 w-auto" value={selected ?? latest?.id} onChange={(e) => setSelected(e.target.value === latest?.id ? null : e.target.value)}>
             {history.map((h) => <option key={h.id} value={h.id}>{new Date(h.createdAt).toLocaleString()}</option>)}
           </select>
         )}
         {isLoading ? (
           <button className="btn-ghost" onClick={stop}>Stop</button>
         ) : (
-          <button className="btn-primary" disabled={!canRun} onClick={() => submit({})}>
+          <button className="btn-primary" disabled={!canRun} onClick={run}>
             {history.length ? "Run fresh analysis" : "Analyze chat"}
           </button>
         )}

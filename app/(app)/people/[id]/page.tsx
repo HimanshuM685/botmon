@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { getPerson, loadChat } from "@/lib/data";
-import { computeStats } from "@/lib/stats";
+import { Prisma } from "@/generated/prisma/client";
+import { getPerson } from "@/lib/data";
+import { activityWindows, type ChatStats } from "@/lib/stats";
 import { RELATIONS } from "@/lib/labels";
 import { deletePerson } from "@/app/actions";
 import { ChatUploader } from "@/components/chat-uploader";
@@ -17,11 +18,12 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   if (!person) notFound();
 
   const [chat, analyses, keyCount] = await Promise.all([
-    db.chatUpload.findFirst({ where: { personId: person.id }, orderBy: { createdAt: "desc" } }),
-    db.analysis.findMany({ where: { personId: person.id }, orderBy: { createdAt: "desc" }, take: 10 }),
+    db.chatUpload.findFirst({ where: { personId: person.id }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
+    db.analysis.findMany({ where: { personId: person.id, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
     db.apiKey.count({ where: { userId: user.id } }),
   ]);
-  const stats = chat ? computeStats(await loadChat(chat.cipher), chat.myName) : null;
+  const stats = chat ? (chat.stats as unknown as ChatStats) : null;
+  const recent = stats ? activityWindows(stats) : null;
   const pronoun = person.gender === "FEMALE" ? "She" : person.gender === "MALE" ? "He" : "They";
 
   return (
@@ -37,7 +39,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         </ConfirmButton>
       </header>
 
-      {chat && stats && (
+      {chat && stats && recent && (
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted">
@@ -50,7 +52,11 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
             <Stat label={`${pronoun} starts`} value={`${stats.theyInitiatePct}%`} hint="of conversations" />
             <Stat label="Message split" value={`${Math.round((stats.theirs / Math.max(1, stats.total)) * 100)}%`} hint={`from ${person.name.split(" ")[0]}`} />
             <Stat label={`${pronoun} replies in`} value={fmtMin(stats.theirMedianReplyMin)} hint={`you: ${fmtMin(stats.myMedianReplyMin)}`} />
-            <Stat label="Last 30 days" value={stats.last30Theirs.toLocaleString()} hint={trend(stats.last30Theirs, stats.prev30Theirs)} />
+            {recent.daysSinceLast > 30 ? (
+              <Stat label="Last message" value={`${recent.daysSinceLast}d`} hint="ago · upload a newer export" />
+            ) : (
+              <Stat label="Last 30 days" value={recent.last30.toLocaleString()} hint={trend(recent.last30, recent.prev30)} />
+            )}
           </dl>
         </section>
       )}
