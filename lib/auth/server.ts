@@ -10,11 +10,8 @@ export { auth };
 /** Signed-in Neon Auth user id, or null. Use in route handlers (return 401 on null). */
 export async function getUserId(): Promise<string | null> {
   const { data } = await auth.getSession();
-  const id = data?.user?.id;
-  if (!id) return null;
-  // Accounts pending deletion can't use the API until restored.
-  const row = await db.user.findUnique({ where: { id }, select: { deletedAt: true } });
-  return row?.deletedAt ? null : id;
+  // Accounts pending deletion are filtered in the data queries themselves (getPerson, export), no extra lookup here.
+  return data?.user?.id ?? null;
 }
 
 /**

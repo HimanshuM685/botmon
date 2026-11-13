@@ -1,7 +1,6 @@
 import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { purgeExpired } from "@/lib/purge";
-import { daysLeft, TRASH_DAYS } from "@/lib/trash";
+import { daysLeft, purgeCutoff, TRASH_DAYS } from "@/lib/trash";
 import { RestoreButton } from "@/components/restore-button";
 
 export const metadata = { title: "Trash" };
@@ -10,9 +9,8 @@ type Row = { kind: "person" | "chat" | "analysis" | "thread" | "fact"; id: strin
 
 export default async function Trash() {
   const user = await requireUser();
-  await purgeExpired({ userId: user.id }); // clear this user's expired items before listing
-
-  const deleted = { not: null };
+  // Past-window items wait for the daily purge; just don't list them.
+  const deleted = { not: null, gte: purgeCutoff() };
   const mine = { person: { userId: user.id } };
   const [people, chats, analyses, threads, facts] = await Promise.all([
     db.person.findMany({ where: { userId: user.id, deletedAt: deleted }, select: { id: true, name: true, deletedAt: true } }),

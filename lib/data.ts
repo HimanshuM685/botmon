@@ -22,9 +22,9 @@ export const chatPayloadSchema = z.object({
     .max(MAX_MESSAGES),
 });
 
-/** Owner-scoped person lookup. Returns null for other users' ids and for people in the trash. */
+/** Owner-scoped person lookup. Null for other users' ids, people in the trash, and accounts pending deletion. */
 export function getPerson(userId: string, personId: string) {
-  return db.person.findFirst({ where: { id: personId, userId, ...alive } });
+  return db.person.findFirst({ where: { id: personId, userId, ...alive, user: alive } });
 }
 
 /** The person's current chat (not in the trash). */

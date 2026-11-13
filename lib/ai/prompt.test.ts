@@ -18,3 +18,12 @@ it("incremental prompt sends only new messages plus a short context", () => {
   expect(inc).toContain('"label":"Warm"');
   expect(inc.length).toBeLessThan(full.length / 10);
 });
+
+it("full re-read carries the prior read as an anchor and flags thin chats", () => {
+  const short = msgs.slice(-50);
+  const p = buildPrompt({ ...base, msgs: short, stats: computeStats(short, "Me"), anchor: prevResult });
+  expect(p).toContain("<prior_read>");
+  expect(p).toContain("Limited evidence");
+  expect(buildPrompt(base)).not.toContain("<prior_read>");
+  expect(buildPrompt(base)).not.toContain("Limited evidence");
+});

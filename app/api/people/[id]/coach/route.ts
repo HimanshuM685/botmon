@@ -17,16 +17,18 @@ import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
+import { FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { buildCoachContext, COACH_HISTORY, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
 import type { RelationId } from "@/lib/ai/prompt";
 
 export const maxDuration = 120;
 const HOURLY_LIMIT = 60;
+// Message ids are always minted here; client-sent ids are never trusted as row keys.
+const newId = createIdGenerator({ prefix: "msg", size: 16 });
 
 const bodySchema = z.object({
   threadId: z.string().max(40).nullish(),
   message: z.object({
-    id: z.string().min(1).max(100),
     role: z.literal("user"),
     parts: z.array(z.object({ type: z.literal("text"), text: z.string().min(1).max(4000) })).min(1).max(5),
   }),
@@ -40,7 +42,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Message must be 1–4000 characters" }, { status: 400 });
-  const { message, threadId } = parsed.data;
+  const { threadId } = parsed.data;
+  const message = { ...parsed.data.message, id: newId() };
 
   const key = await getActiveKey(userId);
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
@@ -54,24 +57,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!thread) return Response.json({ error: "Conversation not found" }, { status: 404 });
 
   // Save the user's message before calling the model, so nothing they type is lost even if the AI fails.
-  await db.coachMessage.upsert({
-    where: { id: message.id },
-    create: { id: message.id, threadId: thread.id, role: "user", parts: message.parts },
-    update: {},
-  });
+  await db.coachMessage.create({ data: { id: message.id, threadId: thread.id, role: "user", parts: message.parts } });
 
-  const [rows, chat, read, facts] = await Promise.all([
+  const [rows, chat, read, allFacts] = await Promise.all([
     db.coachMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: COACH_HISTORY }),
     getChat(person.id),
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
-    db.personFact.findMany({ where: { personId: person.id, deletedAt: null }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { kind: true, text: true, happenedAt: true } }),
+    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { kind: true, text: true, happenedAt: true, deletedAt: true } }),
   ]);
+  const facts = allFacts.filter((f) => !f.deletedAt);
+  // One budget for the whole context: timeline (capped), latest read, conversation, then recent chat.
+  const total = CHAR_BUDGET[key.provider];
+  const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE));
+  const used = memory.chars + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
+  const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
 
   const tools = coachTools({
     msgs,
     tz: chat?.tzOffset ?? 0,
-    knownFacts: facts.map((f) => f.text),
+    knownFacts: allFacts.map((f) => f.text), // incl. trashed ones, so the coach doesn't re-add what the user deleted
     saveFact: async (f) => {
       await db.personFact.create({ data: { ...f, personId: person.id, source: "COACH" } });
     },
@@ -92,8 +97,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     notes: person.notes,
     chat: chat ? { myName: chat.myName, theirName: chat.theirName, tzOffset: chat.tzOffset, stats: await getChatStats(chat), msgs } : null,
     read: read?.result ?? null,
-    facts,
-    budget: Math.floor(CHAR_BUDGET[key.provider] / 2),
+    facts: memory.facts,
+    budget: chatBudget,
   });
 
   const result = streamText({
@@ -136,18 +141,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       stream: replay,
       tools,
       originalMessages: messages,
-      generateMessageId: createIdGenerator({ prefix: "msg", size: 16 }),
-      onEnd: async ({ messages: all }) => {
-        // Persist every new or updated message (assistant replies incl. tool calls). Nothing is trimmed.
+      generateMessageId: newId,
+      onEnd: async ({ messages: all, isContinuation }) => {
+        // Persist every new message (assistant replies incl. tool calls). Nothing is trimmed.
+        // Every write is scoped to this thread, so no id can touch another conversation.
         const known = new Set(rows.map((r) => r.id));
-        for (const m of all) {
-          if (known.has(m.id) && m !== all.at(-1)) continue; // already stored; the last one may be a continuation
-          await db.coachMessage.upsert({
-            where: { id: m.id },
-            create: { id: m.id, threadId: thread.id, role: m.role, parts: m.parts as Prisma.InputJsonValue, metadata: (m.metadata ?? undefined) as Prisma.InputJsonValue | undefined },
-            update: { parts: m.parts as Prisma.InputJsonValue },
+        const fresh = all.filter((m) => !known.has(m.id));
+        if (fresh.length)
+          await db.coachMessage.createMany({
+            data: fresh.map((m) => ({ id: m.id, threadId: thread.id, role: m.role, parts: m.parts as Prisma.InputJsonValue, metadata: (m.metadata ?? undefined) as Prisma.InputJsonValue | undefined })),
+            skipDuplicates: true,
           });
-        }
+        const last = all.at(-1);
+        if (isContinuation && last && known.has(last.id))
+          await db.coachMessage.updateMany({ where: { id: last.id, threadId: thread.id }, data: { parts: last.parts as Prisma.InputJsonValue } });
         await db.coachThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
       },
     }),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
@@ -30,6 +30,8 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
 }) {
   const router = useRouter();
   const [current, setCurrent] = useState(threadId);
+  const [list, setList] = useState(threads);
+  const lastSent = useRef("");
   const [input, setInput] = useState("");
   const base = `/people/${personId}/coach`;
 
@@ -44,6 +46,8 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
           const id = res.headers.get("x-thread-id");
           if (id) {
             setCurrent(id);
+            // New conversation: show it in the list right away (no page refresh, which would remount mid-save).
+            setList((l) => (l.some((t) => t.id === id) ? l : [{ id, title: lastSent.current.slice(0, 60), updatedAt: new Date().toISOString() }, ...l]));
             window.history.replaceState(null, "", `${base}?t=${id}`); // keep the URL in sync without remounting
           }
           return res;
@@ -56,7 +60,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
     messages: initialMessages,
     transport,
     onError: (e) => toast.error(errorText(e)),
-    onFinish: () => router.refresh(), // thread list order + new facts on the timeline
+
   });
 
   const busy = status === "submitted" || status === "streaming";
@@ -64,6 +68,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
   function send(text: string) {
     const t = text.trim();
     if (!t || busy) return;
+    lastSent.current = t;
     sendMessage({ text: t }, { body: { threadId: current } });
     setInput("");
   }
@@ -73,7 +78,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
       <aside className="space-y-2">
         <Link href={base} className="btn-ghost h-9 w-full">+ New conversation</Link>
         <ul className="space-y-1">
-          {threads.map((t) => (
+          {list.map((t) => (
             <li key={t.id} className="group flex items-center gap-1">
               <Link
                 href={`${base}?t=${t.id}`}
@@ -88,7 +93,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
                   if (!title) return;
                   const r = await renameThread(t.id, title);
                   if (r?.error) toast.error(r.error);
-                  else router.refresh();
+                  else setList((l) => l.map((x) => (x.id === t.id ? { ...x, title: title.trim().slice(0, 80) } : x)));
                 }}
               >
                 ✎

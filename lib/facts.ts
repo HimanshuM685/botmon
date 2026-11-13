@@ -44,3 +44,22 @@ export function newFacts(existing: string[], candidates: FactInput[]): FactInput
 export function factsForPrompt(facts: { kind: string; text: string; happenedAt: Date | null }[]) {
   return facts.map((f) => `- [${f.kind.toLowerCase()}${f.happenedAt ? ` ${f.happenedAt.toISOString().slice(0, 10)}` : ""}] ${f.text}`).join("\n");
 }
+
+/**
+ * Keep the facts that fit in `maxChars` of prompt (from the end of the list: latest dated, then undated),
+ * so a timeline that grows with every read never pushes the prompt past the model's limit.
+ */
+export function factsWithinBudget<T extends { kind: string; text: string; happenedAt: Date | null }>(facts: T[], maxChars: number) {
+  const kept: T[] = [];
+  let used = 0;
+  for (let i = facts.length - 1; i >= 0; i--) {
+    const len = facts[i].text.length + 24; // line prefix: "- [preference 2026-01-01] "
+    if (used + len > maxChars) break;
+    kept.unshift(facts[i]);
+    used += len;
+  }
+  return { facts: kept, chars: used };
+}
+
+/** Share of a provider's prompt budget the timeline may use. */
+export const FACTS_SHARE = 0.15;

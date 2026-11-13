@@ -6,8 +6,9 @@ import { analysisSchema, type Analysis } from "@/lib/ai/schema";
 import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel, providerError } from "@/lib/ai/provider";
-import { factsFromAnalysis, newFacts } from "@/lib/facts";
+import { FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
+import { computeScore } from "@/lib/stats";
 
 export const maxDuration = 300;
 const HOURLY_LIMIT = 10;
@@ -27,12 +28,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // Incremental by default: reuse the last read of this chat and send only messages after it.
   const full = ((await req.json().catch(() => null)) as { mode?: string } | null)?.mode === "full";
-  const prev = full
-    ? null
-    : await db.analysis.findFirst({
-        where: { personId: person.id, chatId: chat.id, deletedAt: null, result: { not: Prisma.DbNull }, throughAt: { not: null } },
-        orderBy: { createdAt: "desc" },
-      });
+  // Latest read of this chat: the base for an incremental read, or a stability anchor for a full re-read.
+  const last = await db.analysis.findFirst({
+    where: { personId: person.id, chatId: chat.id, deletedAt: null, result: { not: Prisma.DbNull }, throughAt: { not: null } },
+    orderBy: { createdAt: "desc" },
+  });
+  const prev = full ? null : last;
   if (prev && chat.lastAt <= prev.throughAt!)
     return Response.json({ error: "Already up to date with this chat. Add a newer export, or run a full re-read." }, { status: 409 });
   const mode = prev ? "incremental" : "full";
@@ -42,7 +43,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const run = await db.analysis.create({
     data: { personId: person.id, provider: key.provider, model: key.model, chatId: chat.id, throughAt: chat.lastAt, mode },
   });
-  const recent = await db.analysis.count({ where: { person: { userId }, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
+  const recent = await db.analysis.count({ where: { person: { userId }, deletedAt: undefined, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
   if (recent > HOURLY_LIMIT) {
     await db.analysis.delete({ where: { id: run.id } });
     return Response.json({ error: "Hourly limit reached. Try again later." }, { status: 429 });
@@ -50,9 +51,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const [msgs, allFacts] = await Promise.all([
     loadChat(chat.cipher),
-    db.personFact.findMany({ where: { personId: person.id }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { kind: true, text: true, happenedAt: true, deletedAt: true } }),
+    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { kind: true, text: true, happenedAt: true, deletedAt: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
+  // Everything shares one budget: timeline (capped), previous read, then as much chat as still fits.
+  const total = CHAR_BUDGET[key.provider];
+  const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE));
+  const chatBudget = Math.max(5_000, total - memory.chars - (prev ? JSON.stringify(prev.result).length : 0));
+  const stats = await getChatStats(chat);
   const prompt = buildPrompt({
     personName: person.name,
     relation: person.relation as RelationId,
@@ -60,12 +66,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     notes: person.notes,
     myName: chat.myName,
     theirName: chat.theirName,
-    stats: await getChatStats(chat),
+    stats,
     tzOffsetMin: chat.tzOffset,
     msgs,
-    budget: CHAR_BUDGET[key.provider],
+    budget: chatBudget,
     previous: prev ? { result: prev.result as unknown as Analysis, throughAt: prev.throughAt!.getTime() } : undefined,
-    facts,
+    anchor: full && last ? (last.result as unknown as Analysis) : undefined,
+    facts: memory.facts,
   });
   const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
 
@@ -74,6 +81,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     system: SYSTEM,
     prompt,
     output: Output.object({ schema: analysisSchema }),
+    // Same chat, same answer: greedy sampling, plus a per-chat seed where the provider supports one.
+    temperature: 0,
+    seed: seedFor(chat.id),
     maxRetries: 1,
   });
 
@@ -102,7 +112,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       if (!n) {
         // Save before closing so the client's refresh sees it. Invalid/partial JSON throws and is not saved.
         try {
-          const output = await result.output;
+          const generated = await result.output;
+          const output: Analysis = { ...generated, status: { ...generated.status, score: computeScore(generated.signals, stats) } };
           await db.analysis.update({ where: { id: run.id }, data: { result: output } });
           // Keep every new detail as long-term memory (skips ones already on the timeline).
           // Facts the user deleted count as known too, so a re-read doesn't bring them back.
@@ -122,4 +133,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   return new Response(body, {
     headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-read-mode": mode, "x-read-messages": String(newMessages) },
   });
+}
+
+/** Stable 31-bit seed from the chat id. */
+function seedFor(id: string) {
+  let h = 0;
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return h & 0x7fffffff;
 }

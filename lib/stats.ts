@@ -81,3 +81,40 @@ export function activityWindows(s: ChatStats, now = Date.now()): ActivityWindows
     daysSinceLast: s.lastMessageAt ? Math.max(0, Math.floor((now - s.lastMessageAt) / DAY)) : 0,
   };
 }
+
+// ponytail: hand-tuned weights; calibrate against real reads if scores feel off.
+const SIGNAL_WEIGHTS = { reciprocity: 2, warmth: 2, curiosityAboutUser: 2, effort: 1.5, consistency: 1.5, selfDisclosure: 1, futureTalk: 1 } as const;
+export type Signals = Partial<Record<keyof typeof SIGNAL_WEIGHTS, { level?: number } | undefined>>;
+
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+
+/**
+ * 0-100 score from the model's rubric levels (70%) and exact chat stats (30%), shrunk toward 50
+ * when there is little chat. Same signals and stats always give the same score.
+ */
+export function computeScore(signals: Signals, s: ChatStats, now = Date.now()): number {
+  let sum = 0, weight = 0;
+  for (const [k, w] of Object.entries(SIGNAL_WEIGHTS)) {
+    const level = signals[k as keyof Signals]?.level;
+    if (typeof level !== "number") continue;
+    sum += w * clamp01(level / 4);
+    weight += w;
+  }
+  const model = weight ? sum / weight : 0.5;
+
+  const w = activityWindows(s, now);
+  const statParts = [
+    clamp01(s.theyInitiatePct / 50), // they start half the conversations = fully even
+    s.myMedianReplyMin == null || s.theirMedianReplyMin == null ? 0.5 : clamp01((s.myMedianReplyMin + 1) / (s.theirMedianReplyMin + 1)),
+    s.myAvgLen ? clamp01(s.theirAvgLen / s.myAvgLen) : 0.5,
+    w.last30 + w.prev30 ? w.last30 / (w.last30 + w.prev30) : 0.5,
+  ];
+  const fromStats = statParts.reduce((a, b) => a + b, 0) / statParts.length;
+
+  const raw = 100 * (0.7 * model + 0.3 * fromStats);
+  const certainty = 0.5 + 0.5 * clamp01(Math.min(s.total / 300, s.days / 14));
+  return Math.round(50 + (raw - 50) * certainty);
+}
+
+/** Below this the read must say confidence is low. */
+export const isThinChat = (s: ChatStats) => s.days < 14 || s.total < 300;

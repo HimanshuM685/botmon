@@ -110,7 +110,11 @@ export async function setDefaultProvider(input: ProviderId) {
 export async function deleteAccount() {
   const user = await requireUser();
   // 30-day grace: hide everything now; lib/purge.ts erases the account (app data + Neon Auth identity) later.
-  await db.user.update({ where: { id: user.id }, data: { deletedAt: new Date() } });
+  // AI keys are secrets, not user data: they go immediately, as the privacy page promises.
+  await db.$transaction([
+    db.apiKey.deleteMany({ where: { userId: user.id } }),
+    db.user.update({ where: { id: user.id }, data: { deletedAt: new Date(), defaultProvider: null } }),
+  ]);
   await auth.signOut();
   redirect("/");
 }
@@ -127,42 +131,31 @@ export async function restoreAccount() {
 const trashKind = z.enum(["person", "chat", "analysis", "thread", "fact"]);
 type TrashKind = z.infer<typeof trashKind>;
 
+// Child rows all share { id, personId, deletedAt } and belong to a person, so one code path handles them.
+type ChildDelegate = {
+  findFirst(args: { where: object; select: { personId: true; person: { select: { deletedAt: true } } } }): Promise<{ personId: string; person: { deletedAt: Date | null } } | null>;
+  update(args: { where: { id: string }; data: { deletedAt: Date | null } }): Promise<unknown>;
+};
+const children = {
+  chat: db.chatUpload,
+  analysis: db.analysis,
+  thread: db.coachThread,
+  fact: db.personFact,
+} as unknown as Record<Exclude<TrashKind, "person">, ChildDelegate>;
+
 /** Owner-checked lookup of any trashable row; returns its person. */
 async function ownedItem(userId: string, kind: TrashKind, id: string) {
-  const owner = { person: { userId } };
-  switch (kind) {
-    case "person": {
-      const p = await db.person.findFirst({ where: { id, userId } });
-      return p && { personId: p.id, personDeleted: !!p.deletedAt };
-    }
-    case "chat": {
-      const r = await db.chatUpload.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
-      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
-    }
-    case "analysis": {
-      const r = await db.analysis.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
-      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
-    }
-    case "thread": {
-      const r = await db.coachThread.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
-      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
-    }
-    case "fact": {
-      const r = await db.personFact.findFirst({ where: { id, ...owner }, select: { personId: true, person: { select: { deletedAt: true } } } });
-      return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
-    }
+  if (kind === "person") {
+    const p = await db.person.findFirst({ where: { id, userId, deletedAt: undefined } }); // live or trashed
+    return p && { personId: p.id, personDeleted: !!p.deletedAt };
   }
+  const r = await children[kind].findFirst({ where: { id, person: { userId }, deletedAt: undefined }, select: { personId: true, person: { select: { deletedAt: true } } } });
+  return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
 }
 
-async function setDeleted(kind: TrashKind, id: string, deletedAt: Date | null) {
-  const data = { deletedAt };
-  switch (kind) {
-    case "person": return db.person.update({ where: { id }, data });
-    case "chat": return db.chatUpload.update({ where: { id }, data });
-    case "analysis": return db.analysis.update({ where: { id }, data });
-    case "thread": return db.coachThread.update({ where: { id }, data });
-    case "fact": return db.personFact.update({ where: { id }, data });
-  }
+function setDeleted(kind: TrashKind, id: string, deletedAt: Date | null) {
+  const args = { where: { id }, data: { deletedAt } };
+  return kind === "person" ? db.person.update(args) : children[kind].update(args);
 }
 
 /** Move one item to the trash. People use deletePerson (it redirects). */

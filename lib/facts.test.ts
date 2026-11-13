@@ -21,3 +21,12 @@ it("de-dupes against stored facts and within the batch, ignoring case and punctu
   const c = factsFromAnalysis({ keyFacts: [{ fact: "Loves filter coffee!", category: "preference", when: "" }, { fact: "loves  filter coffee", category: "preference", when: "" }, { fact: "Plays badminton", category: "other", when: "" }] });
   expect(newFacts(["loves filter coffee"], c).map((f) => f.text)).toEqual(["Plays badminton"]);
 });
+
+it("factsWithinBudget keeps the latest facts that fit", async () => {
+  const { factsWithinBudget } = await import("./facts");
+  const facts = Array.from({ length: 100 }, (_, i) => ({ kind: "FACT", text: `fact number ${i} padded to some length`, happenedAt: null }));
+  const { facts: kept, chars } = factsWithinBudget(facts, 600);
+  expect(chars).toBeLessThanOrEqual(600);
+  expect(kept.at(-1)!.text).toContain("fact number 99");
+  expect(kept.length).toBeLessThan(100);
+});

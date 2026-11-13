@@ -110,6 +110,11 @@ export function AnalysisView({ personId, history, canRun, state }: { personId: s
   );
 }
 
+const SIGNALS = [
+  ["reciprocity", "Matches your effort"], ["warmth", "Warmth"], ["curiosityAboutUser", "Curious about you"], ["effort", "Effort in replies"],
+  ["consistency", "Consistency"], ["selfDisclosure", "Opens up"], ["futureTalk", "Talks about plans"],
+] as const;
+
 const TREND = { warming: "▲ warming", steady: "● steady", cooling: "▼ cooling" } as const;
 
 const SECTIONS = [
@@ -117,7 +122,7 @@ const SECTIONS = [
 ] as const;
 
 function Report({ a, live }: { a: DeepPartial<Analysis>; live: boolean }) {
-  const score = Math.round(a.status?.score ?? 0);
+  const score = a.status?.score == null ? undefined : Math.round(a.status.score);
   const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.success("Copied"));
   return (
     <div className="space-y-10" aria-live="polite">
@@ -141,6 +146,25 @@ function Report({ a, live }: { a: DeepPartial<Analysis>; live: boolean }) {
             </div>
           </div>
         )}
+        {a.signals && (
+          <Block title="What the score is built on">
+            <ul className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+              {SIGNALS.map(([k, label]) => {
+                const sg = a.signals?.[k];
+                if (typeof sg?.level !== "number") return null;
+                return (
+                  <li key={k}>
+                    <div className="flex items-center justify-between text-sm"><span>{label}</span><span className="font-mono text-dim">{sg.level}/4</span></div>
+                    <div className="mt-1.5 h-1.5 rounded-full bg-ink-3" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={4} aria-valuenow={sg.level}>
+                      <div className="h-full rounded-full bg-heart transition-[width] duration-500" style={{ width: `${(sg.level / 4) * 100}%` }} />
+                    </div>
+                    {sg.evidence && <p className="mt-1.5 text-xs italic text-muted">{sg.evidence}</p>}
+                  </li>
+                );
+              })}
+            </ul>
+          </Block>
+        )}
         {a.emotional && (
           <Block title="Their mood lately">
             <p className="leading-relaxed text-muted">{a.emotional.currentMood}</p>
@@ -153,6 +177,17 @@ function Report({ a, live }: { a: DeepPartial<Analysis>; live: boolean }) {
       </Group>
 
       <Group id="person" title="Who they are">
+        {a.mind && (
+          <Block title="How they think" tone="heart">
+            <dl className="grid gap-5 md:grid-cols-2">
+              {a.mind.howTheySeeYou?.view && <Mind label="How they see you" text={a.mind.howTheySeeYou.view} evidence={a.mind.howTheySeeYou.evidence} />}
+              {a.mind.whatTheyWant?.want && <Mind label="What they want from this" text={a.mind.whatTheyWant.want} evidence={a.mind.whatTheyWant.evidence} />}
+              {a.mind.investment && <Mind label="How much they put in" text={a.mind.investment} />}
+              {a.mind.emotionalPattern && <Mind label="How they show feelings" text={a.mind.emotionalPattern} />}
+            </dl>
+            <div className="mt-6"><Bullets title="Not clear yet" items={a.mind.unknowns} dot="bg-dim" /></div>
+          </Block>
+        )}
         {a.personality && (
           <Block title="Personality">
             <p className="leading-relaxed text-muted">{a.personality.summary}</p>
@@ -276,6 +311,21 @@ function Report({ a, live }: { a: DeepPartial<Analysis>; live: boolean }) {
           <List title="Avoid" items={a.avoid} dot="bg-heart-2" />
         </div>
       </Group>
+
+      {!!a.observations?.length && (
+        <details className="card p-6 sm:p-8">
+          <summary className="label cursor-pointer">Evidence this read is built on ({a.observations.length})</summary>
+          <ul className="mt-4 space-y-3">
+            {a.observations.map((o, i) => o?.quote && (
+              <li key={i} className="rounded-2xl bg-ink-3 p-4 text-sm">
+                <p className="font-mono text-xs text-dim">{o.when}{o.signal ? ` · ${o.signal}` : ""}</p>
+                <p className="mt-1 italic">“{o.quote}”</p>
+                {o.reading && <p className="mt-1 text-muted">{o.reading}</p>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
@@ -315,16 +365,27 @@ function Evidence({ items, k }: { items?: (Record<string, string | undefined> | 
   );
 }
 
-function ScoreRing({ score }: { score: number }) {
+function Mind({ label, text, evidence }: { label: string; text: string; evidence?: string }) {
+  return (
+    <div>
+      <dt className="label">{label}</dt>
+      <dd className="leading-relaxed">{text}</dd>
+      {evidence && <dd className="mt-1 text-sm italic text-muted">“{evidence}”</dd>}
+    </div>
+  );
+}
+
+/** Score is computed server-side after the read finishes, so it is blank while streaming. */
+function ScoreRing({ score }: { score?: number }) {
   const c = 2 * Math.PI * 42;
   return (
-    <div className="relative size-28 shrink-0" role="img" aria-label={`Score ${score} of 100`}>
+    <div className="relative size-28 shrink-0" role="img" aria-label={score == null ? "Score pending" : `Score ${score} of 100`}>
       <svg viewBox="0 0 100 100" className="size-full -rotate-90">
         <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line)" strokeWidth="8" />
         <circle cx="50" cy="50" r="42" fill="none" stroke="var(--heart)" strokeWidth="8" strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={c * (1 - score / 100)} className="transition-[stroke-dashoffset] duration-700" />
+          strokeDasharray={c} strokeDashoffset={c * (1 - (score ?? 0) / 100)} className="transition-[stroke-dashoffset] duration-700" />
       </svg>
-      <span className="display absolute inset-0 grid place-items-center text-4xl">{score}</span>
+      <span className="display absolute inset-0 grid place-items-center text-4xl">{score ?? "…"}</span>
     </div>
   );
 }
