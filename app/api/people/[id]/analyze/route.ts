@@ -1,12 +1,11 @@
 import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { getActiveKey, getPerson, loadChat } from "@/lib/data";
+import { getActiveKey, getChatStats, getPerson, loadChat } from "@/lib/data";
 import { analysisSchema } from "@/lib/ai/schema";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
-import type { ChatStats } from "@/lib/stats";
 
 export const maxDuration = 300;
 const HOURLY_LIMIT = 10;
@@ -41,7 +40,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     notes: person.notes,
     myName: chat.myName,
     theirName: chat.theirName,
-    stats: chat.stats as unknown as ChatStats,
+    stats: await getChatStats(chat),
     tzOffsetMin: chat.tzOffset,
     msgs,
     budget: CHAR_BUDGET[key.provider],

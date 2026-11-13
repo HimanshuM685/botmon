@@ -2,8 +2,8 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
-import { getPerson } from "@/lib/data";
-import { activityWindows, type ChatStats } from "@/lib/stats";
+import { getChatStats, getPerson } from "@/lib/data";
+import { activityWindows } from "@/lib/stats";
 import { RELATIONS } from "@/lib/labels";
 import { deletePerson } from "@/app/actions";
 import { ChatUploader } from "@/components/chat-uploader";
@@ -22,7 +22,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
     db.analysis.findMany({ where: { personId: person.id, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
     db.apiKey.count({ where: { userId: user.id } }),
   ]);
-  const stats = chat ? (chat.stats as unknown as ChatStats) : null;
+  const stats = chat ? await getChatStats(chat) : null;
   const recent = stats ? activityWindows(stats) : null;
   const pronoun = person.gender === "FEMALE" ? "She" : person.gender === "MALE" ? "He" : "They";
 

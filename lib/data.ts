@@ -5,6 +5,7 @@ import { db } from "./db";
 import { decrypt, decryptBuffer } from "./crypto";
 import type { Msg } from "./parsers/types";
 import type { ProviderId } from "./ai/models";
+import { computeStats, type ChatStats } from "./stats";
 
 export const MAX_PEOPLE = 3;
 export const MAX_MESSAGES = 200_000;
@@ -27,6 +28,15 @@ export function getPerson(userId: string, personId: string) {
 
 export async function loadChat(cipher: string): Promise<Msg[]> {
   return JSON.parse(gunzipSync(decryptBuffer(cipher)).toString("utf8")).messages;
+}
+
+/** Stored stats, or for chats uploaded before stats were stored: compute from the messages once and save. */
+export async function getChatStats(chat: { id: string; stats: unknown; myName: string; tzOffset: number; cipher?: string }): Promise<ChatStats> {
+  if (chat.stats) return chat.stats as ChatStats;
+  const cipher = chat.cipher ?? (await db.chatUpload.findUniqueOrThrow({ where: { id: chat.id }, select: { cipher: true } })).cipher;
+  const stats = computeStats(await loadChat(cipher), chat.myName, chat.tzOffset);
+  await db.chatUpload.update({ where: { id: chat.id }, data: { stats } });
+  return stats;
 }
 
 export async function getActiveKey(userId: string) {

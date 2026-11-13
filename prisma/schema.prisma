@@ -86,7 +86,8 @@ model ChatUpload {
   myName    String
   theirName String
   /// ChatStats computed at upload (lib/stats.ts)
-  stats     Json
+  /// null on rows uploaded before stats were stored; filled lazily by getChatStats (lib/data.ts)
+  stats     Json?
   /// Uploader's Date#getTimezoneOffset(), minutes
   tzOffset  Int        @default(0)
   createdAt DateTime   @default(now())

@@ -1,12 +1,7 @@
-/*
-  Warnings:
-
-  - Added the required column `stats` to the `ChatUpload` table without a default value. This is not possible if the table is not empty.
-
-*/
+-- stats is nullable: existing rows are encrypted, so they are backfilled lazily in app code (getChatStats).
 -- AlterTable
 ALTER TABLE "Analysis" ALTER COLUMN "result" DROP NOT NULL;
 
 -- AlterTable
-ALTER TABLE "ChatUpload" ADD COLUMN     "stats" JSONB NOT NULL,
+ALTER TABLE "ChatUpload" ADD COLUMN     "stats" JSONB,
 ADD COLUMN     "tzOffset" INTEGER NOT NULL DEFAULT 0;
