@@ -20,6 +20,7 @@ import { CHAR_BUDGET } from "@/lib/ai/models";
 import { entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { buildCoachContext, COACH_HISTORY, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
 import type { RelationId } from "@/lib/ai/prompt";
+import { voiceForPrompt, voiceProfile } from "@/lib/voice";
 
 export const maxDuration = 120;
 const HOURLY_LIMIT = 60;
@@ -74,6 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const used = memory.chars + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
   const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
+  const voice = chat ? voiceProfile(msgs, chat.myName) : null;
 
   const tools = coachTools({
     msgs,
@@ -106,6 +108,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     read: read?.result ?? null,
     facts: memory.facts,
     budget: chatBudget,
+    voice: voice ? voiceForPrompt(voice) : undefined,
   });
 
   const result = streamText({

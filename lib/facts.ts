@@ -17,8 +17,8 @@ export function toEntities(tags: (string | undefined)[] | undefined): string[] {
 /** Same fact said slightly differently ("Loves  coffee." vs "loves coffee") counts as one. */
 export const normalizeFact = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
-/** Full dates only; "March" or "next week" stay in the text instead. */
-function toDate(s: string | undefined): Date | null {
+/** Full dates only ("YYYY-MM-DD", optionally followed by a time); "March" or "next week" stay in the text instead. */
+export function toDate(s: string | undefined): Date | null {
   if (!s || !/^\d{4}-\d{2}-\d{2}/.test(s)) return null;
   const d = new Date(s.slice(0, 10) + "T00:00:00Z");
   return Number.isNaN(d.getTime()) ? null : d;

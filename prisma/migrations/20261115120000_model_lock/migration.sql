@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "Person" ADD COLUMN "modelLockUntil" TIMESTAMP(3),
+ADD COLUMN "modelRuns" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN "modelRunsSince" TIMESTAMP(3);

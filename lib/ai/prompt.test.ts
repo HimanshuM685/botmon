@@ -60,3 +60,11 @@ it("works without a chat: no stats, no chat section, memory as the evidence", ()
   expect(patch).not.toContain("<recent_chat>");
   expect(patch).toContain("No single memory is marked as new");
 });
+
+it("carries the user's typing voice into reads and model updates, and only when there is one", () => {
+  const voice = "How the user types, measured from 21 of their own messages.";
+  expect(buildPrompt({ ...base, voice })).toContain(voice);
+  expect(buildModelPatchPrompt({ ...base, voice, read: prevResult, added: [], removed: [] })).toContain(voice);
+  expect(buildPrompt(base)).not.toContain("How the user types, measured");
+  expect(buildMemoryReadPrompt({ personName: "Riya", relation: "CRUSH", gender: "FEMALE", notes: null, tzOffsetMin: 0, voice })).not.toContain(voice); // no chat, nothing measured
+});

@@ -47,3 +47,11 @@ it("over budget, keeps memories connected to the focus before newer unrelated on
   expect(kept.at(-1)!.text).toContain("fact number 49");
   expect(within(facts, 1e6, ["wedding"]).facts).toHaveLength(50);
 });
+
+it("toDate accepts a date with a time and rejects vague dates", async () => {
+  const { toDate } = await import("./facts");
+  expect(toDate("2026-11-10T00:00")?.toISOString().slice(0, 10)).toBe("2026-11-10");
+  expect(toDate("2026-11-10")?.toISOString().slice(0, 10)).toBe("2026-11-10");
+  expect(toDate("March")).toBeNull();
+  expect(toDate("")).toBeNull();
+});

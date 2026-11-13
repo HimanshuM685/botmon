@@ -67,7 +67,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         hasChat={!!chat}
         canRun={!!chat && keyCount > 0}
         canSync={keyCount > 0}
-        advice={{ stale: last ? adviceStale(last, context) : enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}
+        advice={{ stale: last ? adviceStale(last, context) : !chat && enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}
         history={analyses.map((a) => ({ id: a.id, createdAt: a.createdAt.toISOString(), model: a.model, mode: a.mode, result: a.result as Analysis }))}
       />
     </div>

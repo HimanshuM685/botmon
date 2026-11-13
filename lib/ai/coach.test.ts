@@ -64,3 +64,32 @@ it("correct retires the matching memory and saves the new truth", async () => {
   expect(saved).toEqual(["Broke up with her boyfriend in November {boyfriend}"]); // inherits the old memory's connections
   expect(links).toEqual(["new1 updates f1"]);
 });
+
+it("matchMemory: exact first, single close match, never guesses or matches empty", async () => {
+  const { matchMemory } = await import("./coach");
+  const mem = ["Loves sushi", "Loves sushi with her dad", "😊", "Has a boyfriend named Arjun"];
+  expect(matchMemory(mem, "loves sushi!")).toBe(0);
+  expect(matchMemory(mem, "Has a boyfriend named Arjun.")).toBe(3);
+  expect(matchMemory(mem, "has a boyfriend named arjun now")).toBe(3); // close length, single match
+  expect(matchMemory(mem, "loves sushi rolls")).toBe("none"); // overlaps "Loves sushi" but differs too much to be sure
+  expect(matchMemory(mem, "sushi")).toBe("none"); // too short relative to every candidate
+  expect(matchMemory(["Trip to Goa in May", "Trip to Goa in Mar"], "trip to goa in m")).toBe("ambiguous");
+  expect(matchMemory(mem, "🙂")).toBe("none"); // empty after normalizing
+});
+
+it("recall and correct see memories saved earlier in the same turn", async () => {
+  const { coachTools } = await import("./coach");
+  let n = 0;
+  const retired: string[] = [];
+  const tools = coachTools({
+    msgs: [], tz: 0, knownFacts: [], facts: [],
+    saveFact: async () => `f${++n}`,
+    retireFact: async (id) => void retired.push(id),
+    linkFacts: async () => undefined,
+  });
+  const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
+  await run(tools.remember, { kind: "EVENT", text: "Trip to Goa on the 14th", happenedAt: "2026-12-14", about: ["goa trip"] });
+  expect(String(await run(tools.recall, { about: "goa trip" }))).toContain("Trip to Goa on the 14th");
+  expect(await run(tools.correct, { old: "Trip to Goa on the 14th", replacement: "Trip to Goa moved to the 21st", kind: "EVENT", happenedAt: "2026-12-21" })).toMatchObject({ updated: true });
+  expect(retired).toEqual(["f1"]);
+});

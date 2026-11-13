@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Msg } from "@/lib/parsers/types";
 import { activityWindows, toLocal, type ChatStats } from "@/lib/stats";
-import { factsForPrompt, normalizeEntity, normalizeFact, toEntities } from "@/lib/facts";
+import { factsForPrompt, normalizeEntity, normalizeFact, toDate, toEntities } from "@/lib/facts";
 import { fitToBudget, RELATIONS, type RelationId } from "./prompt";
 
 export const COACH_HISTORY = 60;
@@ -16,7 +16,7 @@ How you help:
 - When the user says something in memory is no longer true or has changed ("they broke up", "the trip is cancelled", "it's on the 14th now"), call correct with the old memory line and the new truth.
 - Saved memories update the read automatically, so never tell the user to re-run or refresh anything. If you saved or corrected something, say so in one short line.
 - With no chat and little memory, ask one or two natural questions to learn what matters (how they met, how often they talk, what happened last) instead of giving generic advice.
-- Write any suggested message in the user's own texting style and language mix.
+- Any message you draft for the user to send must read as if they typed it: follow the "How the user types" section exactly (casing, punctuation, spellings, emoji, length, language mix). Never polish it. Without that section, keep drafts short and plain.
 - Keep answers focused: short paragraphs or a few bullets, then a clear next step.
 
 Ethics: encourage honest, respectful communication. Never suggest manipulation, guilt-tripping, jealousy games, pressure or ignoring a "no". If the other person seems uninterested or set a boundary, say so kindly and help the user respect it. If the user describes abuse, self-harm or danger, prioritise safety and suggest real help.
@@ -33,6 +33,8 @@ export function buildCoachContext(p: {
   facts: { kind: string; text: string; happenedAt: Date | null; entities?: string[] }[];
   budget: number;
   now?: number;
+  /** How the user types, from voiceForPrompt (lib/voice.ts). */
+  voice?: string;
 }) {
   const now = p.now ?? Date.now();
   const tz = p.chat?.tzOffset ?? 0;
@@ -49,6 +51,7 @@ export function buildCoachContext(p: {
   } else parts.push("No chat uploaded yet.");
   parts.push(p.read ? `<latest_read>\n${JSON.stringify(p.read)}\n</latest_read>` : "No read of the chat yet.");
   parts.push(p.facts.length ? `<memory>\n${factsForPrompt(p.facts)}\n</memory>` : "<memory>empty</memory>");
+  if (p.voice) parts.push(p.voice);
   if (p.chat) {
     const { lines, trimmed } = fitToBudget(p.chat.msgs, p.budget, tz);
     parts.push(`<recent_chat${trimmed ? ` note="most recent ${lines.length} of ${p.chat.msgs.length} messages; use searchChat for older ones"` : ""}>\n${lines.join("\n")}\n</recent_chat>`);
@@ -68,6 +71,22 @@ export function searchMessages(msgs: Msg[], query: string, limit: number, tz: nu
   return hits;
 }
 
+/**
+ * Find the memory the coach means by `old`: an exact (normalized) match, else the single memory that contains
+ * it or is contained by it with close length. Never guesses between several, never matches empty text.
+ */
+export function matchMemory(texts: string[], old: string): number | "none" | "ambiguous" {
+  const k = normalizeFact(old);
+  if (!k) return "none";
+  const norm = texts.map(normalizeFact);
+  const exact = norm.indexOf(k);
+  if (exact >= 0) return exact;
+  const close = norm
+    .map((t, i) => ({ t, i }))
+    .filter(({ t }) => t && (t.includes(k) || k.includes(t)) && Math.min(t.length, k.length) / Math.max(t.length, k.length) >= 0.75);
+  return close.length === 1 ? close[0].i : close.length ? "ambiguous" : "none";
+}
+
 export function coachTools(deps: {
   msgs: Msg[];
   tz: number;
@@ -81,10 +100,10 @@ export function coachTools(deps: {
   linkFacts?: (fromId: string, toId: string, kind: "updates") => Promise<void>;
 }) {
   const known = new Set(deps.knownFacts.map(normalizeFact));
+  // Starts as the alive memories and is kept current within the turn, so recall/correct see what remember just saved.
   const alive = [...(deps.facts ?? [])];
-  const toDate = (s: string) => {
-    const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + "T00:00:00Z") : null;
-    return d && !Number.isNaN(d.getTime()) ? d : null;
+  const track = (id: string | void, f: { kind: string; text: string; happenedAt: Date | null; entities: string[] }) => {
+    if (id) alive.push({ id, ...f });
   };
   return {
     searchChat: tool({
@@ -107,7 +126,8 @@ export function coachTools(deps: {
         const k = normalizeFact(text);
         if (known.has(k)) return { saved: false, reason: "already in memory" };
         known.add(k);
-        await deps.saveFact({ kind, text, happenedAt: toDate(happenedAt), entities: toEntities(about) });
+        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: toEntities(about) };
+        track(await deps.saveFact(fact), fact);
         return { saved: true, text };
       },
     }),
@@ -120,17 +140,19 @@ export function coachTools(deps: {
         happenedAt: z.string().describe("YYYY-MM-DD of the new truth if known, else empty string"),
       }),
       execute: async ({ old, replacement, kind, happenedAt }) => {
-        const k = normalizeFact(old);
-        const i = alive.findIndex((f) => normalizeFact(f.text) === k);
-        const j = i >= 0 ? i : alive.findIndex((f) => { const t = normalizeFact(f.text); return t.includes(k) || k.includes(t); });
-        if (j < 0 || !deps.retireFact) return { updated: false, reason: "no matching memory; use remember for new information" };
+        if (!deps.retireFact) return { updated: false, reason: "memory can't be changed here" };
+        const j = matchMemory(alive.map((f) => f.text), old);
+        if (j === "none") return { updated: false, reason: "no matching memory; copy the line exactly from the memory list, or use remember for new information" };
+        if (j === "ambiguous") return { updated: false, reason: "several memories match; copy the exact line you mean from the memory list" };
         const [gone] = alive.splice(j, 1);
         await deps.retireFact(gone.id);
         const text = replacement.trim();
         if (text.length < 3 || known.has(normalizeFact(text))) return { updated: true, retired: gone.text };
         known.add(normalizeFact(text));
         // The new truth stays connected to everything the old memory was connected to, and points back at it.
-        const id = await deps.saveFact({ kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [] });
+        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [] };
+        const id = await deps.saveFact(fact);
+        track(id, fact);
         if (id) await deps.linkFacts?.(id, gone.id, "updates");
         return { updated: true, retired: gone.text, saved: text };
       },

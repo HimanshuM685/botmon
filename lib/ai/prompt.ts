@@ -30,7 +30,7 @@ Rules:
 - Encourage honest, respectful communication. Never suggest manipulation, guilt-tripping, jealousy games, love-bombing, pressure, surveillance or ignoring a "no".
 - If the other person seems uninterested, uncomfortable or has set a boundary, say it plainly and advise respecting it.
 - Flag unhealthy patterns on either side (controlling behaviour, disrespect, one-sided effort) in redFlags.
-- Write message suggestions in the user's own texting style and language mix (e.g. Hinglish if they use it).
+- Message suggestions must read as if the user typed them: follow the "How the user types" section exactly (their casing, punctuation, spellings, emoji, length and language mix). Never polish, never add a greeting or sign-off they don't use. Without that section, write short, plain, natural texts.
 - Be specific. Generic advice like "communicate more" is useless; say what to say and when.
 - Be thorough. Every list should be as complete as the chat supports; keyFacts should capture every concrete detail (names, family, friends, work, studies, health, places, plans, preferences, past events) because it becomes long-term memory.
 - Give evidence: traits, love languages and interests each cite a moment from the chat.
@@ -72,6 +72,8 @@ type HeaderInput = {
   tzOffsetMin: number;
   now?: number;
   facts?: Fact[];
+  /** How the user types, from voiceForPrompt (lib/voice.ts). Absent without a chat. */
+  voice?: string;
 };
 
 /** Who is who, the user's notes, memory and exact stats. Shared by reads and model updates. */
@@ -94,7 +96,7 @@ ${memory}Computed stats (exact, trust these over your own counting):
 - Average message length: user ${s.myAvgLen} chars, them ${s.theirAvgLen} chars.
 - Today is ${today}. Their messages in the last 30 days: ${w.last30}, in the 30 days before that: ${w.prev30}.
 - Their most active hours (local time, 24h): ${s.theirTopHours.join(", ") || "n/a"}.
-- Last message ${toLocal(s.lastMessageAt, p.tzOffsetMin).toISOString().slice(0, 10)} (${w.daysSinceLast} days ago) from ${s.lastSender === "me" ? "the user" : "them"}.`;
+- Last message ${toLocal(s.lastMessageAt, p.tzOffsetMin).toISOString().slice(0, 10)} (${w.daysSinceLast} days ago) from ${s.lastSender === "me" ? "the user" : "them"}.${p.voice ? `\n\n${p.voice}` : ""}`;
 }
 
 /**
@@ -164,6 +166,8 @@ export function buildPrompt(p: {
   anchor?: Analysis;
   /** Long-term memory already saved for this person (timeline facts). */
   facts?: { kind: string; text: string; happenedAt: Date | null }[];
+  /** How the user types, from voiceForPrompt (lib/voice.ts). */
+  voice?: string;
 }) {
   const s = p.stats;
   return `${header(p)}

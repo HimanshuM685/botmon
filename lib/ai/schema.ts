@@ -97,7 +97,7 @@ export const analysisSchema = z.object({
       when: z.string().describe("Timing, e.g. 'tonight', 'this weekend', 'after she replies'"),
     }),
   ).describe("Exactly 2: the best immediate move, then the follow-up after it"),
-  messageSuggestions: z.array(z.string()).describe("Exactly 4 ready-to-send messages written in the user's own texting style"),
+  messageSuggestions: z.array(z.string()).describe("Exactly 4 ready-to-send messages typed exactly the way the user types (see 'How the user types'): their casing, punctuation, spellings, emoji and length. A line break inside one means separate messages sent in a row."),
   conversationStarters: z.array(z.string()).describe("Topics or questions that would land well with them, based on their interests"),
   avoid: z.array(z.string()).describe("2-5 things the user should stop or avoid doing"),
 });
@@ -124,4 +124,9 @@ export type ModelPatch = z.infer<typeof modelPatchSchema>;
 
 type Generated = z.infer<typeof analysisSchema>;
 /** `status.score` is computed in code after generation (older saved reads carry the model's own score there). */
-export type Analysis = Omit<Generated, "status"> & { status: Generated["status"] & { score?: number }; whatChanged?: string };
+export type Analysis = Omit<Generated, "status"> & {
+  status: Generated["status"] & { score?: number };
+  whatChanged?: string;
+  /** How many of the user's own messages the suggestions' typing style was measured from (lib/voice.ts). */
+  voiceFrom?: number;
+};

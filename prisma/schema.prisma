@@ -77,20 +77,25 @@ model ApiKey {
 }
 
 model Person {
-  id        String        @id @default(cuid())
-  userId    String
-  name      String
-  relation  Relation
-  gender    Gender        @default(FEMALE)
-  notes     String?
-  createdAt DateTime      @default(now())
+  id             String        @id @default(cuid())
+  userId         String
+  name           String
+  relation       Relation
+  gender         Gender        @default(FEMALE)
+  notes          String?
+  createdAt      DateTime      @default(now())
   /// Soft delete: hidden now, purged 30 days later (lib/purge.ts)
-  deletedAt DateTime?
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  chats     ChatUpload[]
-  analyses  Analysis[]
-  facts     PersonFact[]
-  threads   CoachThread[]
+  deletedAt      DateTime?
+  /// Set while a living-read update runs (app/api/people/[id]/model), so only one runs per person at a time
+  modelLockUntil DateTime?
+  /// Living-read updates in the current hour window (cost cap)
+  modelRuns      Int           @default(0)
+  modelRunsSince DateTime?
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chats          ChatUpload[]
+  analyses       Analysis[]
+  facts          PersonFact[]
+  threads        CoachThread[]
 
   @@index([userId])
 }
@@ -118,30 +123,30 @@ model ChatUpload {
 }
 
 model Analysis {
-  id        String    @id @default(cuid())
-  personId  String
-  provider  Provider
-  model     String
+  id          String    @id @default(cuid())
+  personId    String
+  provider    Provider
+  model       String
   /// null while running or if the run failed; every row counts toward the hourly limit
-  result    Json?
+  result      Json?
   /// Chat this read was based on and the last message it covered; the next run only sends newer messages
-  chatId    String?
-  throughAt DateTime?
+  chatId      String?
+  throughAt   DateTime?
   /// "full" or "incremental"
-  mode      String    @default("full")
+  mode        String    @default("full")
   /// Fingerprint of the notes and timeline the advice was written for, and when (lib/context.ts)
   contextHash String?
   adviceAt    DateTime?
-  createdAt DateTime  @default(now())
-  deletedAt DateTime?
-  person    Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+  person      Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
 
   @@index([personId, createdAt])
 }
 
 /// Long-term memory about a person: extracted by analyses, saved by the coach, or added by the user.
 model PersonFact {
-  id         String     @id @default(cuid())
+  id         String       @id @default(cuid())
   personId   String
   kind       FactKind
   text       String
@@ -150,11 +155,11 @@ model PersonFact {
   analysisId String?
   /// People, places, topics and events this memory is about, normalised (lib/facts.ts normalizeEntity).
   /// Memories sharing one are connected: the memory graph.
-  entities   String[]   @default([])
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
+  entities   String[]     @default([])
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
   deletedAt  DateTime?
-  person     Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+  person     Person       @relation(fields: [personId], references: [id], onDelete: Cascade)
   linksFrom  MemoryLink[] @relation("from")
   linksTo    MemoryLink[] @relation("to")
 

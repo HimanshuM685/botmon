@@ -21,7 +21,11 @@ const KINDS = { EVENT: "Event", FACT: "Fact", PREFERENCE: "Preference", DATE: "D
 const SOURCE = { ANALYSIS: "from a read", COACH: "from coach", USER: "added by you" } as const;
 const DOT: Record<string, string> = { EVENT: "bg-heart", FACT: "bg-paper", PREFERENCE: "bg-mint", DATE: "bg-amber" };
 
-export function Timeline({ personId, personName, facts, links }: { personId: string; personName: string; facts: Fact[]; links: MapLink[] }) {
+export function Timeline({ personId, personName, facts, links, replaced = {} }: {
+  personId: string; personName: string; facts: Fact[]; links: MapLink[];
+  /** memory id -> text of the older memory it corrected (that one is in the trash) */
+  replaced?: Record<string, string>;
+}) {
   const [filter, setFilter] = useState<string>("ALL");
   const [editing, setEditing] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "map">("list");
@@ -78,6 +82,11 @@ export function Timeline({ personId, personName, facts, links }: { personId: str
                   <div className="flex flex-wrap items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm leading-relaxed">{f.text}</p>
+                      {replaced[f.id] && (
+                        <p className="mt-1 text-xs text-dim">
+                          Replaces: <span className="line-through">{replaced[f.id]}</span>
+                        </p>
+                      )}
                       <p className="mt-1.5 text-xs text-dim">
                         {KINDS[f.kind as keyof typeof KINDS]}
                         {f.happenedAt && ` · ${new Date(f.happenedAt).toLocaleDateString(undefined, { dateStyle: "medium", timeZone: "UTC" })}`}

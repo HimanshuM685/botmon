@@ -404,12 +404,18 @@ function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; 
           <Block title="Things you could send" tone="heart">
             <ul className="space-y-2">
               {a.messageSuggestions.map((s, i) => s && (
-                <li key={i} className="flex items-start justify-between gap-3 rounded-2xl rounded-br-md bg-heart/10 px-4 py-3">
-                  <span className="text-sm">{s}</span>
-                  {!live && <button className="shrink-0 text-xs text-heart hover:underline" onClick={() => copy(s)}>Copy</button>}
+                <li key={i} className="flex items-start justify-between gap-3">
+                  {/* Each line is its own message, the way the user sends them. */}
+                  <div className="flex min-w-0 flex-col items-start gap-1">
+                    {s.split("\n").filter(Boolean).map((line, j) => (
+                      <span key={j} className="rounded-2xl rounded-bl-md bg-heart/10 px-4 py-2.5 text-sm">{line}</span>
+                    ))}
+                  </div>
+                  {!live && <button className="mt-2.5 shrink-0 text-xs text-heart hover:underline" onClick={() => copy(s)}>Copy</button>}
                 </li>
               ))}
             </ul>
+            {!!a.voiceFrom && <p className="mt-4 text-xs text-dim">Written the way you type, learned from {a.voiceFrom.toLocaleString()} of your own messages.</p>}
           </Block>
         )}
         <div className="grid gap-4 md:grid-cols-2">
