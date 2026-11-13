@@ -51,8 +51,10 @@ export async function deletePerson(id: string) {
   redirect("/dashboard");
 }
 
+const providerSchema = z.enum(PROVIDER_IDS as [ProviderId, ...ProviderId[]]);
+
 const keySchema = z.object({
-  provider: z.enum(PROVIDER_IDS as [ProviderId, ...ProviderId[]]),
+  provider: providerSchema,
   apiKey: z.string().trim().min(10, "That key looks too short").max(500),
   model: z.string().trim().min(1).max(120),
 });
@@ -80,14 +82,25 @@ export async function saveKey(_: ActionState, form: FormData): Promise<ActionSta
   return { ok: true };
 }
 
-export async function deleteKey(provider: ProviderId) {
+export async function deleteKey(input: ProviderId) {
   const user = await requireUser();
-  await db.apiKey.deleteMany({ where: { userId: user.id, provider } });
+  const provider = providerSchema.safeParse(input);
+  if (!provider.success) return;
+  await db.apiKey.deleteMany({ where: { userId: user.id, provider: provider.data } });
+  // Keep defaultProvider pointing at a key that exists (or nothing).
+  const me = await db.user.findUnique({ where: { id: user.id }, select: { defaultProvider: true } });
+  if (me?.defaultProvider === provider.data) {
+    const next = await db.apiKey.findFirst({ where: { userId: user.id }, orderBy: { createdAt: "asc" }, select: { provider: true } });
+    await db.user.update({ where: { id: user.id }, data: { defaultProvider: next?.provider ?? null } });
+  }
   revalidatePath("/settings");
 }
 
-export async function setDefaultProvider(provider: ProviderId) {
+export async function setDefaultProvider(input: ProviderId) {
   const user = await requireUser();
+  const parsed = providerSchema.safeParse(input);
+  if (!parsed.success) return;
+  const provider = parsed.data;
   if (!(await db.apiKey.findFirst({ where: { userId: user.id, provider } }))) return;
   await db.user.update({ where: { id: user.id }, data: { defaultProvider: provider } });
   revalidatePath("/settings");

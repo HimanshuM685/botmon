@@ -36,13 +36,14 @@ export function ChatUploader({ personId, personName, hasChat }: { personId: stri
 
   async function upload() {
     if (!chat || !me) return;
-    const them = chat.senders.filter((s) => s !== me);
-    // Group chats: keep only the two people.
-    const theirName = them[0];
+    // Group chats: keep only you and the most active other person.
+    const theirName = chat.senders.find((s) => s !== me);
+    if (!theirName) return toast.error(`This chat only has messages from ${me}. Export a chat with both of you in it.`);
     const messages = chat.messages.filter((m) => m.sender === me || m.sender === theirName);
+    if (messages.length < 10) return toast.error(`Only ${messages.length} messages between you and ${theirName}. Need at least 10.`);
     setBusy(true);
     try {
-      const body = gzipSync(strToU8(JSON.stringify({ source: chat.source, myName: me, theirName, messages })));
+      const body = gzipSync(strToU8(JSON.stringify({ source: chat.source, myName: me, theirName, messages, tzOffset: new Date().getTimezoneOffset() })));
       const res = await fetch(`/api/people/${personId}/chat`, { method: "POST", body, headers: { "content-type": "application/octet-stream" } });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);

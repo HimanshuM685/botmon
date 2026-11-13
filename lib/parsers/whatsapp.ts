@@ -2,8 +2,10 @@ import { type Msg, type ParsedChat, sendersOf } from "./types";
 
 // Handles Android "31/12/23, 9:41 pm - Name: hi" and iOS "[31/12/23, 9:41:12 PM] Name: hi",
 // with /, . or - date separators, 12h or 24h clocks, and multi-line messages.
+// A header must end with "] " (iOS) or " - " (Android) so a continuation line that merely starts with a date
+// ("12/5/24, 10:00 works for me") stays part of the previous message.
 const HEADER =
-  /^\[?(\d{1,4})[/.\-](\d{1,2})[/.\-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([ap]\.?\s?m\.?)?\]?\s*(?:[-–]\s*)?(.*)$/i;
+  /^\[?(\d{1,4})[/.\-](\d{1,2})[/.\-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([ap]\.?\s?m\.?)?(?:\]\s*|\s+[-–]\s+)(.*)$/i;
 const MEDIA = /^(<media omitted>|<attached: .*>|(image|video|audio|sticker|gif|document) omitted|.*\.(jpg|jpeg|png|webp|opus|mp4|pdf) \(file attached\))$/i;
 
 const clean = (s: string) => s.replace(/[‎‏‪-‮]/g, "").replace(/[  ]/g, " ");
