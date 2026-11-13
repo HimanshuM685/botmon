@@ -1,0 +1,39 @@
+import "server-only";
+import { gunzipSync } from "node:zlib";
+import { z } from "zod";
+import { db } from "./db";
+import { decrypt, decryptBuffer } from "./crypto";
+import type { Msg } from "./parsers/types";
+import type { ProviderId } from "./ai/models";
+
+export const MAX_PEOPLE = 3;
+export const MAX_MESSAGES = 200_000;
+
+export const chatPayloadSchema = z.object({
+  source: z.enum(["WHATSAPP", "INSTAGRAM", "PASTE"]),
+  myName: z.string().min(1).max(200),
+  theirName: z.string().min(1).max(200),
+  messages: z
+    .array(z.object({ sender: z.string().max(200), text: z.string().max(20_000), ts: z.number().int().positive() }))
+    .min(10, "Need at least 10 messages for a useful analysis")
+    .max(MAX_MESSAGES),
+});
+
+/** Owner-scoped person lookup. Returns null for other users' ids. */
+export function getPerson(userId: string, personId: string) {
+  return db.person.findFirst({ where: { id: personId, userId } });
+}
+
+export async function loadChat(cipher: string): Promise<Msg[]> {
+  return JSON.parse(gunzipSync(decryptBuffer(cipher)).toString("utf8")).messages;
+}
+
+export async function getActiveKey(userId: string) {
+  const [user, keys] = await Promise.all([
+    db.user.findUnique({ where: { id: userId }, select: { defaultProvider: true } }),
+    db.apiKey.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
+  ]);
+  const k = keys.find((x) => x.provider === user?.defaultProvider) ?? keys[0];
+  if (!k) return null;
+  return { provider: k.provider as ProviderId, model: k.model, apiKey: decrypt(k.cipher) };
+}

@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Provider {
+  GEMINI
+  OPENAI
+  NIM
+}
+
+enum Relation {
+  CRUSH
+  GIRLFRIEND
+  BOYFRIEND
+  PARTNER
+  FAVORITE
+  FRIEND
+  EX
+}
+
+enum Gender {
+  FEMALE
+  MALE
+  OTHER
+}
+
+enum ChatSource {
+  WHATSAPP
+  INSTAGRAM
+  PASTE
+}
+
+/// Mirror of the Neon Auth user (neon_auth schema). id = Neon Auth user id.
+model User {
+  id              String    @id
+  name            String?
+  email           String    @unique
+  image           String?
+  defaultProvider Provider?
+  createdAt       DateTime  @default(now())
+  apiKeys         ApiKey[]
+  people          Person[]
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  userId    String
+  provider  Provider
+  model     String
+  cipher    String
+  last4     String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+}
+
+model Person {
+  id        String       @id @default(cuid())
+  userId    String
+  name      String
+  relation  Relation
+  gender    Gender       @default(FEMALE)
+  notes     String?
+  createdAt DateTime     @default(now())
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chats     ChatUpload[]
+  analyses  Analysis[]
+
+  @@index([userId])
+}
+
+model ChatUpload {
+  id        String     @id @default(cuid())
+  personId  String
+  source    ChatSource
+  cipher    String
+  msgCount  Int
+  firstAt   DateTime
+  lastAt    DateTime
+  myName    String
+  theirName String
+  createdAt DateTime   @default(now())
+  person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@index([personId])
+}
+
+model Analysis {
+  id        String   @id @default(cuid())
+  personId  String
+  provider  Provider
+  model     String
+  result    Json
+  createdAt DateTime @default(now())
+  person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@index([personId, createdAt])
+}

@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #0e0c12;
+  --ink-2: #16131c;
+  --ink-3: #201b28;
+  --line: #2c2535;
+  --paper: #f3ece4;
+  --muted: #a49aad;
+  --dim: #6f6679;
+  --heart: #ff5a6e;
+  --heart-2: #ff8a5c;
+  --mint: #6fe3b4;
+  --amber: #ffc56b;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-paper: var(--paper);
+  --color-muted: var(--muted);
+  --color-dim: var(--dim);
+  --color-heart: var(--heart);
+  --color-heart-2: var(--heart-2);
+  --color-mint: var(--mint);
+  --color-amber: var(--amber);
+  --font-sans: var(--font-geist-sans);
+  --font-display: var(--font-fraunces);
+}
+
+html { color-scheme: dark; }
+body { background: var(--ink); color: var(--paper); }
+::selection { background: var(--heart); color: var(--ink); }
+
+@utility btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-5 h-11 text-sm font-medium transition
+      disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart;
+  }
+@utility btn-primary { @apply btn bg-heart text-ink hover:bg-heart-2 active:scale-[.98]; }
+@utility btn-ghost { @apply btn border border-line text-paper hover:bg-ink-3; }
+@utility btn-danger { @apply btn border border-heart/40 text-heart hover:bg-heart/10; }
+@utility input {
+    @apply w-full rounded-xl border border-line bg-ink-2 px-4 h-11 text-sm text-paper placeholder:text-dim
+      focus:outline-none focus:border-heart/70 focus:ring-2 focus:ring-heart/20 transition;
+  }
+@utility label { @apply mb-1.5 block text-xs font-medium uppercase tracking-wider text-muted; }
+@utility card { @apply rounded-3xl border border-line bg-ink-2; }
+@utility chip { @apply inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-xs text-muted; }
+@utility display { font-family: var(--font-fraunces); font-optical-sizing: auto; letter-spacing: -0.02em; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise .5s cubic-bezier(.2,.7,.2,1) both; }
