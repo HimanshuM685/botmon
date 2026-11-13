@@ -1,13 +1,11 @@
 import "server-only";
-import { createNeonAuth } from "@neon/auth/next/server";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { db } from "@/lib/db";
 
-export const auth = createNeonAuth({
-  baseUrl: process.env.NEON_AUTH_BASE_URL!,
-  cookies: { secret: process.env.NEON_AUTH_COOKIE_SECRET! },
-});
+import { auth } from "./neon";
+
+export { auth };
 
 /** Signed-in Neon Auth user id, or null. Use in route handlers (return 401 on null). */
 export async function getUserId(): Promise<string | null> {
