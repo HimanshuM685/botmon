@@ -19,7 +19,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   if (!person) notFound();
 
   const reads = { where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" } } as const;
-  const [chat, analyses, others, keyCount, context, factCount, goals] = await Promise.all([
+  const [chat, analyses, others, keyCount, context, factCount, goals, me] = await Promise.all([
     db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
     db.analysis.findMany({ ...reads, take: 10, select: { id: true, createdAt: true, model: true, mode: true } }),
     db.person.findMany({ where: { userId: user.id, ...alive, NOT: { id: person.id } }, select: { id: true, name: true }, orderBy: { createdAt: "asc" } }),
@@ -27,7 +27,9 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
     currentContextHash(person),
     db.personFact.count({ where: { personId: person.id, ...alive } }),
     db.scoreGoal.findMany({ where: { personId: person.id, ...alive }, orderBy: { fromAt: "asc" }, select: { id: true, signal: true, fromLevel: true, fromAt: true, toLevel: true, achievedAt: true } }),
+    db.user.findUnique({ where: { id: user.id }, select: { selfNames: true } }),
   ]);
+  const selfNames = me?.selfNames ?? [];
   // Only the latest read travels in full; older ones load when picked (loadRead in app/actions.ts).
   // Loaded by the id at the top of the list, so the list and the read shown can never disagree.
   const last = analyses[0] ? await db.analysis.findFirst({ where: { ...reads.where, id: analyses[0].id } }) : null;
@@ -49,7 +51,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   return (
     <div className="space-y-10">
 
-      {!chat && <ChatUploader personId={person.id} personName={person.name} existing={null} />}
+      {!chat && <ChatUploader selfNames={selfNames} personId={person.id} personName={person.name} existing={null} />}
 
       {!keyCount && <p className="card p-5 text-sm text-amber">Add an AI key in Settings to run reads and talk to the coach.</p>}
 
@@ -80,7 +82,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
             {chat.firstAt.toLocaleDateString()} – {chat.lastAt.toLocaleDateString()}
           </p>
           <ChatActions chatId={chat.id} chatWith={chat.theirName} personName={person.name} others={others} />
-          <ChatUploader personId={person.id} personName={person.name} existing={{ myName: chat.myName, theirName: chat.theirName, lastAt: chat.lastAt.getTime() }} />
+          <ChatUploader selfNames={selfNames} personId={person.id} personName={person.name} existing={{ myName: chat.myName, theirName: chat.theirName, lastAt: chat.lastAt.getTime() }} />
         </section>
       )}
     </div>

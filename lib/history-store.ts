@@ -11,7 +11,8 @@ export async function loadUnits(chatId: string): Promise<(Unit & { id: string })
 }
 
 export async function saveUnit(chatId: string, u: Unit, model: string) {
-  await db.chatChapter.create({
+  return db.chatChapter.create({
+    select: { id: true },
     data: { chatId, fromTs: new Date(u.fromTs), toTs: new Date(u.toTs), msgCount: u.msgCount, level: u.level, model, cipher: encrypt(JSON.stringify(u.result)) },
   });
 }

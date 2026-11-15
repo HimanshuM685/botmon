@@ -2,7 +2,7 @@ import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { loadChat } from "@/lib/data";
 import { decrypt } from "@/lib/crypto";
-import { exportEdge } from "@/lib/graph/export";
+import { exportEdge, exportEvidence } from "@/lib/graph/export";
 
 export async function GET() {
   const userId = await getUserId();
@@ -24,19 +24,32 @@ export async function GET() {
       goals: { orderBy: { createdAt: "asc" } },
     },
   });
+  // The user's own profile: traits (hidden ones too, with deletedAt), the lines behind them, and "Coach me" threads.
+  const [self, traits, selfThreads] = await Promise.all([
+    db.selfProfile.findUnique({ where: { userId }, select: { summary: true, voiceCipher: true, updatedAt: true } }),
+    db.selfTrait.findMany({ where: { userId, deletedAt: undefined }, orderBy: { firstSeenAt: "asc" }, include: { evidence: { orderBy: { at: "asc" } } } }),
+    db.coachThread.findMany({ where: { userId, deletedAt: undefined }, orderBy: { createdAt: "asc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }),
+  ]);
   const data = await Promise.all(
     people.map(async ({ chats, edges, ...p }) => ({
       ...p,
       edges: edges.map((e) => exportEdge(e, decrypt)),
-      chats: await Promise.all(chats.map(async ({ cipher, chapters, ...c }) => ({
+      chats: await Promise.all(chats.map(async ({ cipher, chapters, voiceCipher, ...c }) => ({
         ...c,
+        voices: voiceCipher ? JSON.parse(decrypt(voiceCipher)) : null,
         messages: await loadChat(cipher),
         // What each period of a long chat held, as read (lib/history.ts).
         history: chapters.map(({ cipher: h, ...ch }) => ({ ...ch, result: JSON.parse(decrypt(h)) })),
       }))),
     })),
   );
-  return new Response(JSON.stringify({ exportedAt: new Date(), people: data }, null, 2), {
+  const you = {
+    summary: self?.summary ?? null,
+    voice: self?.voiceCipher ? JSON.parse(decrypt(self.voiceCipher)) : null,
+    traits: traits.map(({ evidence, ...t }) => ({ ...t, evidence: evidence.map((e) => exportEvidence(e, decrypt)) })),
+    threads: selfThreads,
+  };
+  return new Response(JSON.stringify({ exportedAt: new Date(), you, people: data }, null, 2), {
     headers: { "content-type": "application/json", "content-disposition": 'attachment; filename="botmon-export.json"' },
   });
 }

@@ -11,6 +11,8 @@ import { linkMemories, loadGraphRows, mergeNodes, syncGraph } from "../graph-sto
 import { acceptCategories, categoryAnswerSchema, categoryPrompt, needsCategory } from "./categories";
 import { acceptTriples, backfillAnswerSchema, backfillPrompt, needsTriples } from "./backfill";
 import { embedMissing } from "./vectors";
+import { promoteMeEdges } from "../self/store";
+import { consolidateSelf } from "../self/job";
 import { acceptEvidence, chunk, evidenceAnswerSchema, evidenceItem, evidencePrompt, renderItem } from "./evidence";
 
 /**
@@ -102,6 +104,12 @@ async function backfillTriples(person: Person, ask: Ask, key: Key) {
   await db.person.update({ where: { id: person.id }, data: { graphFactsAt: through } });
 }
 
+/** The user's own edges (me LIKES x) join their profile, with any line just mined for them (lib/self). */
+const promoteSelf: Step = async (person) => {
+  const owner = await db.person.findUnique({ where: { id: person.id }, select: { userId: true } });
+  if (owner) await promoteMeEdges(owner.userId, person);
+};
+
 /** Nodes without an embedding of this provider's model get one (nothing to do for providers that can't embed). */
 const embedLabels: Step = (person, _ask, key) => embedMissing(person.id, key);
 
@@ -167,7 +175,7 @@ export async function runGraphJob(person: Person, key: Key) {
   const ask = cheapAsk(key);
   try {
     // Typed edges first, so the evidence step has them to work on in the same run.
-    for (const step of [backfillTriples, categorize, mineEvidence, embedLabels] as Step[]) {
+    for (const step of [backfillTriples, categorize, mineEvidence, embedLabels, promoteSelf] as Step[]) {
       if (Date.now() > until) break;
       // One step failing (a malformed answer, a rate limit) must not stop the others.
       await step(person, ask, key).catch((e) => console.error(`graph job: ${step.name} failed`, key.provider, (e as Error)?.message));
@@ -182,5 +190,7 @@ export function scheduleGraphJob(userId: string, person: Person) {
   after(async () => {
     const key = await getActiveKey(userId);
     if (key) await runGraphJob({ id: person.id, name: person.name }, key);
+    // The user's own profile next: whatever this person's reads and graph added to it is merged and summarised.
+    await consolidateSelf(userId).catch((e) => console.error("self consolidation failed", (e as Error)?.message));
   });
 }

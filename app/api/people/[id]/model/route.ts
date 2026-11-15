@@ -2,7 +2,7 @@ import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { alive } from "@/lib/trash";
-import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/data";
+import { getActiveKey, getChat, getChatStats, getPerson, loadChat, getVoices } from "@/lib/data";
 import { Prisma } from "@/generated/prisma/client";
 import { analysisSchema, modelPatchSchema, type Analysis } from "@/lib/ai/schema";
 import { buildMemoryReadPrompt, buildModelPatchPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
@@ -13,7 +13,9 @@ import { emotionMap, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { adviceStale, contextHash } from "@/lib/context";
 import { applyPatch, changedSince, enoughMemory } from "@/lib/model";
 import { computeScore } from "@/lib/stats";
-import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { applyVoice, voiceForPrompt } from "@/lib/voice";
+import { loadSelf, selfVoice } from "@/lib/self/store";
+import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { claimModelRun, releaseModelRun } from "@/lib/model-lock";
 import { loadGraph } from "@/lib/graph-store";
 import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
@@ -62,7 +64,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   // What the read has not absorbed yet; memory connected to it is kept first if the timeline is over budget.
   const { added, removed } = changedSince(allFacts, read?.adviceAt ?? null);
   const msgs = chat ? await loadChat(chat.cipher) : [];
-  const voice = chat ? voiceProfile(msgs, chat.myName) : null;
+  // This chat's voice, stored at upload; without a chat, the user's voice from their other chats.
+  const voice = chat ? (await getVoices(chat, msgs)).me : await selfVoice(userId);
   const emotion = emotionMap(facts); // shares the memory budget below
   const graph = await loadGraph(person, facts);
   // The graph around what changed, plus what the links show overall.
@@ -85,6 +88,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     graph: graphBrief,
     known,
     goals: await goalsPrompt(person.id),
+    // The user's own profile: a prior for yourSide and for advice that fits them (lib/self).
+    self: selfForPrompt({ ...(await loadSelf(userId)), relation: person.relation, budget: Math.floor(CHAR_BUDGET[key.provider] * SELF_SHARE) }),
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,

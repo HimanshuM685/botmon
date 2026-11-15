@@ -9,6 +9,7 @@ import { buildChapterPrompt, buildEraPrompt, type RelationId } from "@/lib/ai/pr
 import { chapterSchema, eraSchema, type Analysis, type ChapterResult } from "@/lib/ai/schema";
 import { eraRange, historyWork, type Range } from "@/lib/history";
 import { claimHistoryRun, loadUnits, releaseHistoryRun, saveUnit } from "@/lib/history-store";
+import { learnFromChat } from "@/lib/self/store";
 import { factsFromAnalysis, newFacts } from "@/lib/facts";
 import { loadGraph, saveMemories } from "@/lib/graph-store";
 import { toLocal } from "@/lib/stats";
@@ -35,7 +36,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await load((await params).id);
   if ("error" in ctx) return ctx.error;
-  const { person, chat, key, msgs } = ctx;
+  const { userId, person, chat, key, msgs } = ctx;
   if (!(await claimHistoryRun(chat.id, LOCK_MS))) return Response.json({ busy: true, retryAfter: 10 });
   const model = getModel(key.provider, key.apiKey, key.model);
   const who = { personName: person.name, relation: person.relation as RelationId, gender: person.gender, myName: chat.myName, theirName: chat.theirName };
@@ -61,7 +62,9 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
       });
       // Removed or moved while this was being read: its memories must not land on this person.
       if (!(await db.chatUpload.findFirst({ where: { id: chat.id, personId: person.id, deletedAt: null }, select: { id: true } }))) return Response.json({ total, todo: 0, gone: true });
-      await saveUnit(chat.id, { ...r, level: 0, result: output }, key.model);
+      const unit = await saveUnit(chat.id, { ...r, level: 0, result: output }, key.model);
+      // What this period showed about the user, proven by their own lines in it.
+      await learnFromChat(userId, person, chat, inRange(msgs, r), output.aboutUser, "CHAPTER", { chapterId: unit.id });
       // What this period taught goes to the timeline like any read's memories, marked with its chat.
       const fresh = newFacts([...known], factsFromAnalysis(output as unknown as Partial<Analysis>));
       await saveMemories(person, fresh, { source: "ANALYSIS", chatId: chat.id });
@@ -116,5 +119,5 @@ async function load(personId: string) {
   if (!chat) return { error: Response.json({ error: "Upload a chat first" }, { status: 400 }) };
   const msgs = await loadChat(chat.cipher);
   const work = historyWork(msgs, await loadUnits(chat.id), CHAR_BUDGET[key.provider], chat.tzOffset);
-  return { person, chat, key, msgs, work };
+  return { userId, person, chat, key, msgs, work };
 }

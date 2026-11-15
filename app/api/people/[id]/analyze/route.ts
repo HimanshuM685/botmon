@@ -1,7 +1,7 @@
 import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { currentContextHash, getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/data";
+import { currentContextHash, getActiveKey, getChat, getChatStats, getPerson, loadChat, getVoices } from "@/lib/data";
 import { analysisSchema, type Analysis } from "@/lib/ai/schema";
 import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
@@ -11,9 +11,11 @@ import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
-import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { applyVoice, voiceForPrompt } from "@/lib/voice";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
+import { learnFromChat, loadSelf, promoteMeEdges } from "@/lib/self/store";
+import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { historyFor } from "@/lib/history-store";
 
 export const maxDuration = 300;
@@ -78,7 +80,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
   const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const stats = await getChatStats(chat);
-  const voice = voiceProfile(msgs, chat.myName);
+  const voice = (await getVoices(chat, msgs)).me; // stored at upload (lib/data.ts)
   const prompt = buildPrompt({
     personName: person.name,
     relation: person.relation as RelationId,
@@ -97,6 +99,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     graph: graphBrief,
     known,
     goals: await goalsPrompt(person.id),
+    // The user's own profile: a prior for yourSide and for advice that fits them (lib/self).
+    self: selfForPrompt({ ...(await loadSelf(userId)), relation: person.relation, budget: Math.floor(CHAR_BUDGET[key.provider] * SELF_SHARE) }),
     voice: voice ? voiceForPrompt(voice) : undefined,
     history: history.text || undefined,
     historyTo: history.to,
@@ -174,6 +178,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const contextHash = await currentContextHash(person);
       await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash, adviceAt: new Date() } });
       await markReachedGoals(person.id, output.signals);
+      // What this read showed about the user, kept only when one of their own lines proves it (lib/self).
+      await learnFromChat(userId, person, chat, msgs, output.aboutUser, "ANALYSIS", { analysisId: run.id });
+      await promoteMeEdges(userId, person).catch(() => undefined);
       // The chat left while the lines above were saving (after the check at the top): take this run's memories off the
       // timeline too. Erased, not trashed, for the same reason as detachChat (app/actions.ts): a trashed memory tells
       // the AI the user said it is no longer true.

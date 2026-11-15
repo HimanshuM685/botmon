@@ -5,6 +5,9 @@ import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@
 import { loadUnits } from "@/lib/history-store";
 import { pruneGraph, retagMemory, saveMemories, syncGraph } from "@/lib/graph-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
+import { recountTraits } from "@/lib/self/store";
+import { toldItem } from "@/lib/self/traits";
+import { SELF_KINDS } from "@/lib/ai/schema";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -46,10 +49,14 @@ export async function savePerson(_: ActionState, form: FormData): Promise<Action
   redirect(`/people/${person.id}`);
 }
 
-export async function deletePerson(id: string): Promise<ActionState> {
+export async function deletePerson(id: string, opts: { forgetMe?: boolean } = {}): Promise<ActionState> {
   const user = await requireUser();
   const res = await db.person.updateMany({ where: { id, userId: user.id, ...alive }, data: { deletedAt: new Date() } });
   if (!res.count) return { error: "Not found" };
+  // "Forget what this chat taught about me": the user's lines from this person go now, not at purge.
+  if (opts.forgetMe) await db.selfEvidence.deleteMany({ where: { personId: id, person: { userId: user.id } } });
+  // What this person taught about the user is hidden while they are in the trash (lib/self/traits.ts rescope).
+  await recountTraits(user.id);
   revalidatePath("/", "layout");
   return { ok: true }; // the client navigates (components/delete-person-button.tsx)
 }
@@ -192,7 +199,7 @@ export async function restoreAccount() {
   redirect("/dashboard");
 }
 
-const trashKind = z.enum(["person", "chat", "analysis", "thread", "fact"]);
+const trashKind = z.enum(["person", "chat", "analysis", "thread", "fact", "trait"]);
 type TrashKind = z.infer<typeof trashKind>;
 
 // Child rows all share { id, personId, deletedAt } and belong to a person, so one code path handles them.
@@ -203,15 +210,23 @@ type ChildDelegate = {
 const children = {
   chat: db.chatUpload,
   analysis: db.analysis,
-  thread: db.coachThread,
   fact: db.personFact,
-} as unknown as Record<Exclude<TrashKind, "person">, ChildDelegate>;
+} as unknown as Record<Exclude<TrashKind, "person" | "thread" | "trait">, ChildDelegate>;
 
-/** Owner-checked lookup of any trashable row; returns its person. */
-async function ownedItem(userId: string, kind: TrashKind, id: string) {
+/** Owner-checked lookup of any trashable row; returns its person (null for the user's own profile and "Coach me" threads). */
+async function ownedItem(userId: string, kind: TrashKind, id: string): Promise<{ personId: string | null; personDeleted: boolean } | null> {
   if (kind === "person") {
     const p = await db.person.findFirst({ where: { id, userId, deletedAt: undefined } }); // live or trashed
     return p && { personId: p.id, personDeleted: !!p.deletedAt };
+  }
+  if (kind === "trait") {
+    const t = await db.selfTrait.findFirst({ where: { id, userId, deletedAt: undefined }, select: { id: true } });
+    return t && { personId: null, personDeleted: false };
+  }
+  if (kind === "thread") {
+    // A person's conversation, or one of the user's own ("Coach me") with no person.
+    const t = await db.coachThread.findFirst({ where: { id, deletedAt: undefined, OR: [{ person: { userId } }, { userId }] }, select: { personId: true, person: { select: { deletedAt: true } } } });
+    return t && { personId: t.personId, personDeleted: !!t.person?.deletedAt };
   }
   const r = await children[kind].findFirst({ where: { id, person: { userId }, deletedAt: undefined }, select: { personId: true, person: { select: { deletedAt: true } } } });
   return r && { personId: r.personId, personDeleted: !!r.person.deletedAt };
@@ -219,7 +234,7 @@ async function ownedItem(userId: string, kind: TrashKind, id: string) {
 
 function setDeleted(kind: TrashKind, id: string, deletedAt: Date | null) {
   const args = { where: { id }, data: { deletedAt } };
-  return kind === "person" ? db.person.update(args) : children[kind].update(args);
+  return kind === "person" ? db.person.update(args) : kind === "thread" ? db.coachThread.update(args) : kind === "trait" ? db.selfTrait.update(args) : children[kind].update(args);
 }
 
 /** Move one item to the trash. People use deletePerson. */
@@ -231,8 +246,8 @@ export async function trashItem(kindInput: string, id: string): Promise<ActionSt
   if (!item) return { error: "Not found" };
   await setDeleted(kind.data, id, new Date());
   // A memory left: what it had overtaken counts again, and what rested on it is gone.
-  if (kind.data === "fact") await syncGraph({ id: item.personId });
-  revalidatePath(`/people/${item.personId}`, "layout");
+  if (kind.data === "fact") await syncGraph({ id: item.personId! });
+  revalidatePath(item.personId ? `/people/${item.personId}` : "/me", "layout");
   revalidatePath("/trash");
   return { ok: true };
 }
@@ -248,9 +263,11 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
   if (item.personDeleted) {
     if ((await db.person.count({ where: { userId: user.id, ...alive } })) >= MAX_PEOPLE)
       return { error: `You already track ${MAX_PEOPLE} people. Delete one first to restore this.` };
-    await db.person.update({ where: { id: item.personId }, data: { deletedAt: null } });
+    await db.person.update({ where: { id: item.personId! }, data: { deletedAt: null } });
+    // What this person taught about the user counts again (it was hidden, not deleted).
+    await recountTraits(user.id);
   }
-  if (kind.data === "chat") {
+  if (kind.data === "chat" && item.personId) {
     // Only one live chat per person: restoring an old chat sends the current one to the trash, and remembers it.
     const [back, current, person] = await Promise.all([
       db.chatUpload.findUniqueOrThrow({ where: { id }, select: { deletedAt: true } }),
@@ -268,7 +285,7 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
     ]);
     await rebuildMemories(person, again.reads, id);
   } else if (kind.data !== "person") await setDeleted(kind.data, id, null);
-  if (kind.data === "fact") await syncGraph({ id: item.personId });
+  if (kind.data === "fact") await syncGraph({ id: item.personId! });
 
   revalidatePath("/", "layout");
   return { ok: true };
@@ -338,6 +355,8 @@ async function detachChat(chat: OwnedChat, now: Date) {
     db.personFact.deleteMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads } } }),
     // Memories its history chapters taught (lib/history.ts): the chapters stay with the chat, wherever it goes.
     db.personFact.deleteMany({ where: { personId: chat.personId, chatId: chat.id } }),
+    // What the chat (its reads and chapters) taught about the user, with the user's lines from it.
+    db.selfEvidence.deleteMany({ where: { personId: chat.personId, OR: [{ chatId: chat.id }, { analysisId: { in: reads } }] } }),
     ...(chat.replacedId ? [db.chatUpload.updateMany({ where: { id: chat.replacedId, personId: chat.personId, deletedAt: { not: null } }, data: { deletedAt: null } })] : []),
     // Nothing on this person may keep pointing at the chat that left, or removing that one later would bring this one back.
     db.chatUpload.updateMany({ where: { personId: chat.personId, replacedId: chat.id }, data: { replacedId: null } }),
@@ -352,6 +371,7 @@ export async function removeChat(chatId: string): Promise<ActionState> {
   await db.$transaction([db.chatUpload.update({ where: { id: chat.id }, data: { deletedAt: now } }), ...(await detachChat(chat, now))]);
   // The erased memories' people and topics leave the graph too.
   await pruneGraph(chat.personId);
+  await recountTraits(user.id);
   revalidatePath("/", "layout");
   return { ok: true };
 }
@@ -372,6 +392,7 @@ export async function moveChat(chatId: string, toPersonId: string): Promise<Acti
     ...again.queries,
   ]);
   await Promise.all([pruneGraph(chat.personId), rebuildMemories(to, again.reads, chat.id)]);
+  await recountTraits(user.id);
   revalidatePath("/", "layout");
   return { ok: true };
 }
@@ -430,12 +451,50 @@ export async function edgeQuote(edgeId: string): Promise<{ text: string; date: s
   return { text: decrypt(e.quoteCipher), date: e.quoteTs ? new Date(Number(e.quoteTs)).toISOString().slice(0, 10) : "", by: e.quoteSender === "me" ? "You" : e.person.name };
 }
 
+/* ---------- The user's own profile (/me) ---------- */
+
+const traitSchema = z.object({
+  id: z.string().max(40).optional(),
+  kind: z.enum(SELF_KINDS),
+  text: z.string().trim().min(3, "Write a little more").max(200),
+});
+
+/**
+ * Add a trait in the user's own words, or change one. Either way it is the user's word from then on: background
+ * work never rewrites it (`edited`), and a trait they wrote never disappears with a person's evidence.
+ */
+export async function saveTrait(_: ActionState, form: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  const parsed = traitSchema.safeParse(Object.fromEntries(form));
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const people = await db.person.findMany({ where: { userId: user.id, deletedAt: undefined }, select: { name: true } });
+  const item = toldItem(parsed.data.kind, parsed.data.text, people.map((p) => p.name));
+  if (!item) return { error: "Write something about you, without names" };
+  if (parsed.data.id) {
+    const res = await db.selfTrait.updateMany({ where: { id: parsed.data.id, userId: user.id, ...alive }, data: { text: item.text, kind: item.kind, edited: true } });
+    if (!res.count) return { error: "Not found" };
+  } else {
+    await db.selfTrait.upsert({ where: { userId_kind_key: { userId: user.id, kind: item.kind, key: item.key } }, create: { userId: user.id, kind: item.kind, key: item.key, text: item.text, source: "USER" }, update: { deletedAt: null, edited: true } });
+  }
+  revalidatePath("/me");
+  return { ok: true };
+}
+
+/** Pin a trait: it stays whatever happens to its evidence, and consolidation never merges it away. */
+export async function pinTrait(id: string, pinned: boolean): Promise<ActionState> {
+  const user = await requireUser();
+  const res = await db.selfTrait.updateMany({ where: { id, userId: user.id, ...alive }, data: { pinned } });
+  if (!res.count) return { error: "Not found" };
+  revalidatePath("/me");
+  return { ok: true };
+}
+
 /* ---------- Coach threads ---------- */
 
 /** What a coach reply was built from (the "why?" toggle). Owner-scoped through the thread's person. */
 export async function loadTrace(messageId: string): Promise<Record<string, unknown> | null> {
   const user = await requireUser();
-  const m = await db.coachMessage.findFirst({ where: { id: messageId, thread: { ...alive, person: { userId: user.id, ...alive } } }, select: { trace: true } });
+  const m = await db.coachMessage.findFirst({ where: { id: messageId, thread: { ...alive, OR: [{ person: { userId: user.id, ...alive } }, { userId: user.id }] } }, select: { trace: true } });
   return (m?.trace ?? null) as Record<string, unknown> | null;
 }
 
@@ -443,7 +502,7 @@ export async function renameThread(id: string, title: string): Promise<ActionSta
   const user = await requireUser();
   const t = z.string().trim().min(1).max(80).safeParse(title);
   if (!t.success) return { error: "Title must be 1–80 characters" };
-  const res = await db.coachThread.updateMany({ where: { id, person: { userId: user.id }, ...alive }, data: { title: t.data } });
+  const res = await db.coachThread.updateMany({ where: { id, OR: [{ person: { userId: user.id } }, { userId: user.id }], ...alive }, data: { title: t.data } });
   if (!res.count) return { error: "Not found" };
   revalidatePath("/people", "layout");
   return { ok: true };

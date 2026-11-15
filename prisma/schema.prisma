@@ -62,6 +62,31 @@ model User {
   deletedAt       DateTime?
   apiKeys         ApiKey[]
   people          Person[]
+  /// Every sender name the user picked as "me" in an upload; the uploader preselects from these
+  selfNames       String[]  @default([])
+  self            SelfProfile?
+  traits          SelfTrait[]
+  selfThreads     CoachThread[]
+}
+
+/// The user's own profile, one per user, learned from their side of every chat (lib/self/*).
+/// Survives deleting any person; deleted with the account.
+model SelfProfile {
+  userId      String    @id
+  /// encrypt() of the voice merged across chats (lib/self/voice.ts mergeVoices): it holds real sample messages
+  voiceCipher String?
+  /// A short paragraph about the user, written by the consolidation job (lib/self/job.ts)
+  summary     String?
+  /// Fingerprint of the traits the summary was written from
+  contextHash String?
+  /// Consolidation job: one run per user at a time, capped per hour (same shape as the graph job)
+  lockUntil   DateTime?
+  runs        Int       @default(0)
+  runsSince   DateTime?
+  /// Per chat, the last message already mined for the profile: { chatId: ts }
+  throughAt   Json      @default("{}")
+  updatedAt   DateTime  @default(now()) @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ApiKey {
@@ -108,6 +133,7 @@ model Person {
   edges          MemoryEdge[]
   findings       MemoryFinding[]
   goals          ScoreGoal[]
+  selfEvidence   SelfEvidence[]
   threads        CoachThread[]
 
   @@index([userId])
@@ -134,8 +160,12 @@ model ChatUpload {
   replacedId String?
   /// Set while its history is being read (app/api/people/[id]/history), so only one run per chat at a time
   historyLockUntil DateTime?
+  /// encrypt() of { me, them }: both sides' typing voices (lib/voice.ts voiceProfile), measured at upload.
+  /// null on chats uploaded before voices were stored; filled lazily by getVoices (lib/data.ts)
+  voiceCipher String?
   person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
   chapters  ChatChapter[]
+  selfEvidence SelfEvidence[]
 
   @@index([personId])
 }
@@ -153,6 +183,7 @@ model ChatChapter {
   model     String
   createdAt DateTime   @default(now())
   chat      ChatUpload @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  selfEvidence SelfEvidence[]
 
   @@index([chatId, level, fromTs])
 }
@@ -310,9 +341,11 @@ model MemoryFinding {
 
 model CoachThread {
   id        String         @id @default(cuid())
-  personId  String
+  /// The person this conversation is about. Null for a "Coach me" thread (mode "self"), which has `userId` instead.
+  personId  String?
+  userId    String?
   title     String
-  /// "coach" | "rehearsal" (practising with a simulation of the person; never read as memory)
+  /// "coach" | "rehearsal" (practising with a simulation of the person; never read as memory) | "self" ("Coach me", no person)
   mode      String         @default("coach")
   /// The older part of a long conversation, summarised (lib/ai/compact.ts), and the last message it covers
   summary   String?
@@ -327,10 +360,12 @@ model CoachThread {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
   deletedAt DateTime?
-  person    Person         @relation(fields: [personId], references: [id], onDelete: Cascade)
+  person    Person?        @relation(fields: [personId], references: [id], onDelete: Cascade)
+  user      User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  CoachMessage[]
 
   @@index([personId, deletedAt, updatedAt])
+  @@index([userId, deletedAt, updatedAt])
 }
 
 /// One row per UI message (AI SDK UIMessage), tool calls included in parts. Never trimmed.
@@ -366,4 +401,87 @@ model ScoreGoal {
   threads    CoachThread[]
 
   @@index([personId, deletedAt])
+}
+
+enum SelfKind {
+  INTEREST
+  HOBBY
+  VALUE
+  HABIT
+  TEXTING
+  AFFECTION
+  STRENGTH
+  BLIND_SPOT
+  PATTERN
+  FACT
+}
+
+/// GLOBAL: seen with 2+ people. RELATION: seen with one, tagged with that relationship type (never a name).
+enum SelfScope {
+  GLOBAL
+  RELATION
+}
+
+enum SelfSource {
+  ANALYSIS
+  CHAPTER
+  COACH
+  GRAPH
+  USER
+}
+
+/// Something about the user, learned only from their own lines (lib/self/ingest.ts) or told by them. Never names
+/// another person. Scope, support, people and confidence are recomputed from live evidence (lib/self/traits.ts).
+model SelfTrait {
+  id          String     @id @default(cuid())
+  userId      String
+  kind        SelfKind
+  /// normalizeFact(text) at creation: what recognises the same trait again
+  key         String
+  text        String
+  scope       SelfScope  @default(RELATION)
+  relation    Relation?
+  confidence  Float      @default(0.5)
+  /// Pieces of evidence, and distinct people they come from
+  support     Int        @default(0)
+  people      Int        @default(0)
+  source      SelfSource
+  /// The user changed the text: background work never rewrites it
+  edited      Boolean    @default(false)
+  pinned      Boolean    @default(false)
+  /// Its evidence went with a purged person; kept as plain text at lower confidence
+  noEvidence  Boolean    @default(false)
+  firstSeenAt DateTime   @default(now())
+  lastSeenAt  DateTime   @default(now())
+  deletedAt   DateTime?
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  evidence    SelfEvidence[]
+
+  @@unique([userId, kind, key])
+  @@index([userId, deletedAt])
+}
+
+/// One of the user's own lines behind a trait. Belongs to a person (and the chat, chapter or read it came from),
+/// so it follows that person's trash and purge and a removed chat. The line is encrypted like the chat.
+model SelfEvidence {
+  id          String       @id @default(cuid())
+  traitId     String
+  personId    String
+  chatId      String?
+  chapterId   String?
+  analysisId  String?
+  /// encrypt() of the exact line; null for evidence without a line (a memory, something told to the coach)
+  quoteCipher String?
+  quoteTs     BigInt
+  at          DateTime
+  createdAt   DateTime     @default(now())
+  trait       SelfTrait    @relation(fields: [traitId], references: [id], onDelete: Cascade)
+  person      Person       @relation(fields: [personId], references: [id], onDelete: Cascade)
+  chat        ChatUpload?  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chapter     ChatChapter? @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@unique([traitId, personId, quoteTs])
+  @@index([personId])
+  @@index([chatId])
+  @@index([analysisId])
 }

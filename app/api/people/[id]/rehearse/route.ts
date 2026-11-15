@@ -1,6 +1,6 @@
 import { createIdGenerator, createUIMessageStream, createUIMessageStreamResponse, generateText } from "ai";
 import { db } from "@/lib/db";
-import { getChat, getChatStats, loadChat } from "@/lib/data";
+import { getChat, getChatStats, loadChat, getVoices } from "@/lib/data";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
@@ -11,7 +11,7 @@ import { focusNodes } from "@/lib/graph/vectors";
 import { enoughMemory } from "@/lib/model";
 import { buildPersonaContext, personaSystem, personaTurns } from "@/lib/ai/persona";
 import type { RelationId } from "@/lib/ai/prompt";
-import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { applyVoice, voiceForPrompt } from "@/lib/voice";
 
 export const maxDuration = 60;
 /** Turns of the rehearsal sent back to the model. */
@@ -47,7 +47,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const said = message.parts.map((p) => p.text).join(" ");
   const msgs = chat ? await loadChat(chat.cipher) : [];
   // Their voice, measured from their own messages: the prompt asks for it, applyVoice below holds the reply to it.
-  const theirVoice = chat ? voiceProfile(msgs, chat.theirName) : null;
+  const theirVoice = chat ? (await getVoices(chat, msgs)).them : null; // stored at upload (lib/data.ts)
   // Grounding, rebuilt every turn: the graph around what was just said, their boundaries, the read, real exchanges.
   const graph = buildGraph(graphRows.nodes, graphRows.edges, facts, { them: person.name });
   const them = graph.nodes.find((n) => n.key === THEM);
