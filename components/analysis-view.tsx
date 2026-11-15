@@ -7,7 +7,7 @@ import { useObject } from "@ai-sdk/react";
 import type { DeepPartial } from "ai";
 import { toast } from "sonner";
 import { analysisSchema, modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
-import { loadRead, trashItem } from "@/app/actions";
+import { loadRead, stopRead, trashItem } from "@/app/actions";
 import { PROVIDERS, type ProviderId } from "@/lib/ai/models";
 import { signalGrowth, SIGNAL_LABEL, type Goal, type SignalKey } from "@/lib/goals";
 import { ConfirmButton } from "./confirm-button";
@@ -40,7 +40,7 @@ function overlay(saved: DeepPartial<Analysis> | undefined, patch: DeepPartial<Mo
 export type ChatNumber = { label: string; value: string; hint: string };
 const menuItem = "block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-ink-3 disabled:opacity-50";
 
-export function AnalysisView({ personId, history, hasChat, canRun, canSync, state, advice, chatNumbers, compareWith, goals = [] }: {
+export function AnalysisView({ personId, history, hasChat, readingInBackground = false, canRun, canSync, state, advice, chatNumbers, compareWith, goals = [] }: {
   /** An earlier read to measure the scores' growth against (lib/goals.ts pickBaseline), as ISO date + scores. */
   compareWith?: { at: string; signals: Analysis["signals"] | null };
   /** Scores the user is working on ("Improve this"), dates as ISO strings. */
@@ -49,6 +49,8 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
   chatNumbers?: ChatNumber[];
   personId: string;
   hasChat: boolean;
+  /** A long read is running on the server (lib/read/job.ts): show its progress. */
+  readingInBackground?: boolean;
   history: Saved[];
   /** A chat and an AI key: reads of the chat can run. */
   canRun: boolean;
@@ -80,11 +82,19 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
   }
   // Newest history id when the current run started; the live object is shown until a newer one arrives via refresh.
   const [baseline, setBaseline] = useState<string | undefined | null>(null);
+  // The read went to the background (long chat, or the provider's rate limit): nothing to stream here.
+  const wentBackground = useRef(false);
   const { object, submit, isLoading, stop, clear } = useObject({
     api: `/api/people/${personId}/analyze`,
     schema: analysisSchema,
     fetch: async (input, init) => {
       const res = await fetch(input, init);
+      wentBackground.current = res.status === 202;
+      if (wentBackground.current) {
+        setBaseline(null);
+        follow();
+        return new Response("{}");
+      }
       const n = Number(res.headers.get("x-read-messages") ?? 0);
       if (res.ok && res.headers.get("x-read-mode") === "incremental")
         toast.info(`Updating your last read with ${n.toLocaleString()} new message${n === 1 ? "" : "s"} only.`);
@@ -95,6 +105,10 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
       clear();
     },
     onFinish: ({ error }) => {
+      if (wentBackground.current) {
+        clear();
+        return;
+      }
       if (error) {
         toast.error("The model returned an incomplete answer. Try again or switch model in Settings.");
         clear();
@@ -144,42 +158,40 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [advice.stale, advice.key, canSync, isLoading]);
 
-  // Long chats: every earlier period is read once (history route) before a read, so nothing old is skipped.
-  const [reading, setReading] = useState<{ done: number; total: number; next?: string | null; wait?: boolean } | null>(null);
+  // Long chats: every earlier period is read once before a read, so nothing old is skipped. That runs on the server
+  // (lib/read/job.ts), so it goes on when this page is closed; here it is only followed.
+  const [reading, setReading] = useState<{ done: number; total: number; nextAt?: string | null } | null>(readingInBackground ? { done: 0, total: 0 } : null);
   const [ask, setAsk] = useState<{ mode: "auto" | "full"; todo: number; chars: number; provider: ProviderId } | null>(null);
-  const stopReading = useRef(false);
   const historyUrl = `/api/people/${personId}/history`;
+  const follow = () => setReading((r) => r ?? { done: 0, total: 0 });
+  const following = !!reading;
 
-  async function readHistory(total: number, todo: number) {
-    stopReading.current = false;
-    setReading({ done: total - todo, total });
-    try {
-      while (!stopReading.current) {
-        const res = await fetch(historyUrl, { method: "POST" });
-        const j = await res.json().catch(() => ({ error: "Couldn't read this part. Try again." }));
-        if (!res.ok) {
-          toast.error(j.error ?? "Couldn't read this part. Try again.");
-          return false;
-        }
-        if (j.gone) {
-          router.refresh();
-          return false;
-        }
-        if (j.retryAfter) {
-          // Rate limit or another tab reading: what is read is saved; wait, then carry on.
-          setReading((r) => r && { ...r, wait: true });
-          for (let s = 0; s < j.retryAfter && !stopReading.current; s++) await new Promise((ok) => setTimeout(ok, 1000));
-          setReading((r) => r && { ...r, wait: false });
-          continue;
-        }
-        setReading({ done: j.total - j.todo, total: j.total, next: j.next });
-        if (!j.todo) return true;
-      }
-      toast.info("Stopped. Everything read so far is kept; it carries on from there next time.");
-      return false;
-    } finally {
+  useEffect(() => {
+    if (!following) return;
+    let live = true;
+    async function poll() {
+      const s = await fetch(historyUrl).then((r) => r.json()).catch(() => null);
+      if (!live || !s || s.error) return;
+      // Only a wait worth mentioning: a step that's simply due now isn't one.
+      const waitUntil = s.job?.nextAt && new Date(s.job.nextAt).getTime() > Date.now() + 5_000 ? s.job.nextAt : null;
+      if (s.job) return setReading({ done: s.total - s.todo, total: s.total, nextAt: waitUntil });
       setReading(null);
+      if (s.failed) toast.error(s.failed);
+      router.refresh(); // the read is saved
     }
+    void poll();
+    const t = setInterval(poll, 15_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [following, historyUrl]);
+
+  async function stopBackground() {
+    await stopRead(personId).catch(() => null);
+    setReading(null);
+    toast.info("Stopped. Everything read so far is kept; it carries on from there next time.");
   }
 
   async function run(mode: "auto" | "full", confirmed = false) {
@@ -190,7 +202,6 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
       if (s?.todo > 0) {
         // A long first run: say what it costs before spending the user's quota.
         if (s.todo > 3 && s.todo === s.total && !confirmed) return setAsk({ mode, todo: s.todo, chars: s.chars, provider: s.provider });
-        if (!(await readHistory(s.total, s.todo))) return;
       }
     }
     adv.stop();
@@ -245,7 +256,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
           </details>
         )}
         {reading ? (
-          <button className="btn-ghost" onClick={() => (stopReading.current = true)}>Stop</button>
+          <button className="btn-ghost" onClick={() => void stopBackground()}>Stop</button>
         ) : isLoading ? (
           <button className="btn-ghost" onClick={stop}>Stop</button>
         ) : (
@@ -277,13 +288,15 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
       {reading && (
         <div className="card space-y-3 p-6 sm:p-8" aria-live="polite">
           <p className="text-sm">
-            Reading your history: <strong>{reading.done} of {reading.total}</strong> parts
-            {reading.wait ? <span className="text-amber"> · waiting for your AI provider&apos;s rate limit</span> : reading.next ? <span className="text-muted"> · {reading.next}</span> : null}
+            {reading.total ? <>Reading your history: <strong>{reading.done} of {reading.total}</strong> parts</> : "Reading your chat"}
+            {reading.nextAt && (
+              <span className="text-amber"> · waiting for your AI provider&apos;s rate limit, carries on around {new Date(reading.nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+            )}
           </p>
           <div className="h-1.5 rounded-full bg-ink-3" role="progressbar" aria-valuemin={0} aria-valuemax={reading.total} aria-valuenow={reading.done}>
             <div className="h-full rounded-full bg-mint transition-[width] duration-500" style={{ width: `${(reading.done / Math.max(1, reading.total)) * 100}%` }} />
           </div>
-          <p className="text-xs text-dim">Each part is saved as it&apos;s read. You can stop or leave, and it carries on from there. The read starts when it&apos;s done.</p>
+          <p className="text-xs text-dim">This takes a while on a long chat, longer on free keys. You can close this window: it keeps reading in the background, and the read shows up here when it&apos;s done.</p>
         </div>
       )}
       {!shown && !isLoading && !reading && !ask && (

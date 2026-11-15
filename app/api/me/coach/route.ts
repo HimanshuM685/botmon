@@ -6,7 +6,7 @@ import { db } from "@/lib/db";
 import { getActiveKey } from "@/lib/data";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
-import { CHAR_BUDGET } from "@/lib/ai/models";
+import { budgetFor } from "@/lib/ai/models";
 import { overHourlyCap } from "@/lib/ai/turn";
 import { compactThread, recentMessages } from "@/lib/ai/thread";
 import { voiceForPrompt } from "@/lib/voice";
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
   } catch {
     messages = [{ id: message.id, role: "user", parts: message.parts }];
   }
-  const profile = selfForPrompt({ ...me, budget: Math.floor(CHAR_BUDGET[key.provider] * SELF_SHARE * 2) });
+  const profile = selfForPrompt({ ...me, budget: Math.floor(budgetFor(key) * SELF_SHARE * 2) });
   const context = [
     profile ? `<about_user>\n${profile}\n</about_user>` : "<about_user>Nothing learned yet: no chat has been read and they haven't told you about themself. Ask.</about_user>",
     thread.summary ? `<conversation_so_far>\n${thread.summary}\n</conversation_so_far>` : "",

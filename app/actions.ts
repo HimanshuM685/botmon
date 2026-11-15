@@ -3,6 +3,7 @@
 import { generateText } from "ai";
 import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@/lib/facts";
 import { loadUnits } from "@/lib/history-store";
+import { cancelRead } from "@/lib/read/job";
 import { pruneGraph, retagMemory, saveMemories, syncGraph } from "@/lib/graph-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { allNames, selfChanged } from "@/lib/self/store";
@@ -110,7 +111,7 @@ export async function setKeyModel(providerInput: string, modelInput: string): Pr
   } catch (e) {
     return { error: providerError(e) };
   }
-  await db.apiKey.update({ where: { userId_provider: { userId: user.id, provider } }, data: { model } });
+  await db.apiKey.update({ where: { userId_provider: { userId: user.id, provider } }, data: { model, charBudget: null } }); // a new model has its own limits
   revalidatePath("/", "layout");
   return { ok: true };
 }
@@ -142,7 +143,7 @@ export async function saveKey(_: ActionState, form: FormData): Promise<ActionSta
     return { error: providerError(e) };
   }
 
-  const data = { model, cipher: encrypt(apiKey), last4: apiKey.slice(-4) };
+  const data = { model, cipher: encrypt(apiKey), last4: apiKey.slice(-4), charBudget: null };
   await db.apiKey.upsert({
     where: { userId_provider: { userId: user.id, provider } },
     create: { ...data, provider, userId: user.id },
@@ -504,5 +505,15 @@ export async function renameThread(id: string, title: string): Promise<ActionSta
   const res = await db.coachThread.updateMany({ where: { id, OR: [{ person: { userId: user.id } }, { userId: user.id }], ...alive }, data: { title: t.data } });
   if (!res.count) return { error: "Not found" };
   revalidatePath("/people", "layout");
+  return { ok: true };
+}
+
+/** Stop the person's background read (lib/read/job.ts). Parts already read are kept; the next run starts from there. */
+export async function stopRead(personId: string): Promise<ActionState> {
+  const user = await requireUser();
+  const person = await getPerson(user.id, personId);
+  const chat = person && (await db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, select: { id: true } }));
+  if (!chat) return { error: "Not found" };
+  await cancelRead(chat.id);
   return { ok: true };
 }

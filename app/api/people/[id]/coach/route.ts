@@ -15,7 +15,7 @@ import { getChat, getChatStats, loadChat, getVoices } from "@/lib/data";
 import { beginTurn } from "@/lib/ai/turn";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
-import { CHAR_BUDGET } from "@/lib/ai/models";
+import { budgetFor } from "@/lib/ai/models";
 import { emotionMap, entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { after } from "next/server";
 import { anyWordQuery, buildCoachContext, capFor, COACH_STEPS, COACH_SYSTEM, coachTools, snippet } from "@/lib/ai/coach";
@@ -86,7 +86,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
   // One budget for the whole context: timeline (capped), latest read, conversation, then recent chat.
-  const total = CHAR_BUDGET[key.provider];
+  const total = budgetFor(key);
   // If memory is over budget, keep what is connected to the people and topics the user just mentioned.
   const focus = entitiesIn(message.parts.map((p) => p.text).join(" "), facts.flatMap((f) => f.entities));
   const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE), focus);

@@ -8,7 +8,7 @@ import { analysisSchema, modelPatchSchema, type Analysis } from "@/lib/ai/schema
 import { buildMemoryReadPrompt, buildModelPatchPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel } from "@/lib/ai/provider";
 import { seedFor, streamResponse } from "@/lib/ai/stream";
-import { CHAR_BUDGET } from "@/lib/ai/models";
+import { budgetFor } from "@/lib/ai/models";
 import { emotionMap, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { adviceStale, contextHash } from "@/lib/context";
 import { applyPatch, changedSince, enoughMemory } from "@/lib/model";
@@ -72,7 +72,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const graphBrief = graph.brief(added.flatMap((f) => f.entities).flatMap((k) => graph.resolve(k)?.id ?? [])).slice(0, 8_000);
   const known = graph.known();
   // Memory, emotion map, graph and names share one slice of the prompt.
-  const memoryBudget = Math.max(2_000, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE) - emotion.length - graphBrief.length - known.join(", ").length);
+  const memoryBudget = Math.max(2_000, Math.floor(budgetFor(key) * FACTS_SHARE) - emotion.length - graphBrief.length - known.join(", ").length);
   const base = {
     voice: voice ? voiceForPrompt(voice) : undefined,
     personName: person.name,
@@ -89,7 +89,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     known,
     goals: await goalsPrompt(person.id),
     // The user's own profile: a prior for yourSide and for advice that fits them (lib/self).
-    self: selfForPrompt({ ...(await loadSelf(userId)), relation: person.relation, budget: Math.floor(CHAR_BUDGET[key.provider] * SELF_SHARE) }),
+    self: selfForPrompt({ ...(await loadSelf(userId)), relation: person.relation, budget: Math.floor(budgetFor(key) * SELF_SHARE) }),
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,

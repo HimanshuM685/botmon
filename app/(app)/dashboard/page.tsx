@@ -19,7 +19,7 @@ export default async function Dashboard() {
       where: { userId: user.id, ...alive },
       orderBy: { createdAt: "asc" },
       include: {
-        chats: { where: alive, select: { msgCount: true, lastAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
+        chats: { where: alive, select: { msgCount: true, lastAt: true, readMode: true }, orderBy: { createdAt: "desc" }, take: 1 },
         analyses: { where: { ...alive, result: { not: Prisma.DbNull } }, select: { result: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
       },
     }),
@@ -48,7 +48,7 @@ export default async function Dashboard() {
                   {a && <span className="display text-4xl text-heart">{a.status.score}</span>}
                 </div>
                 <p className="mt-6 text-sm text-muted">
-                  {a ? <em className="display text-base text-paper">{a.status.label}</em> : chat ? "Chat uploaded. Ready to analyze." : "No chat yet"}
+                  {chat?.readMode ? <span className="animate-pulse text-mint">Reading in the background…</span> : a ? <em className="display text-base text-paper">{a.status.label}</em> : chat ? "Chat uploaded. Ready to analyze." : "No chat yet"}
                 </p>
                 <p className="mt-1 text-xs text-dim">
                   {chat ? `${chat.msgCount.toLocaleString()} messages` : "Upload a WhatsApp or Instagram export"}

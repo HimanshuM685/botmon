@@ -96,6 +96,9 @@ model ApiKey {
   model     String
   cipher    String
   last4     String
+  /// Learned from a "request too large for tokens per minute" answer: chars per call this key can take.
+  /// null: the provider default (CHAR_BUDGET, lib/ai/models.ts)
+  charBudget Int?
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -160,6 +163,12 @@ model ChatUpload {
   replacedId String?
   /// Set while its history is being read (app/api/people/[id]/history), so only one run per chat at a time
   historyLockUntil DateTime?
+  /// Background read in progress (lib/read/job.ts): "auto" | "full"; null when none
+  readMode    String?
+  /// Rate limited: the next step waits until then
+  readNextAt  DateTime?
+  /// Why the last background read stopped
+  readError   String?
   /// encrypt() of { me, them }: both sides' typing voices (lib/voice.ts voiceProfile), measured at upload.
   /// null on chats uploaded before voices were stored; filled lazily by getVoices (lib/data.ts)
   voiceCipher String?

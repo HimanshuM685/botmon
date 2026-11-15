@@ -29,8 +29,9 @@ it("merging: one chat merges to itself; several are weighted by how many message
 });
 
 it("no route measures a voice per request any more: they read the one stored at upload", () => {
-  for (const r of ["analyze", "model", "coach", "rehearse"]) {
-    const src = readFileSync(new URL(`../../app/api/people/[id]/${r}/route.ts`, import.meta.url), "utf8");
+  // The read's prompt is built in lib/read/run.ts (shared by the analyze route and the background read).
+  for (const r of ["../read/run.ts", "../../app/api/people/[id]/model/route.ts", "../../app/api/people/[id]/coach/route.ts", "../../app/api/people/[id]/rehearse/route.ts"]) {
+    const src = readFileSync(new URL(r, import.meta.url), "utf8");
     expect(src, r).not.toContain("voiceProfile(");
     expect(src, r).toContain("getVoices(chat, msgs)");
   }

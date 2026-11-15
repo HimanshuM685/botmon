@@ -8,7 +8,7 @@ import { getModel } from "./provider";
  * Background model calls (graph work, conversation summaries): always the user's own key, on the provider's
  * cheapest model, falling back to the model they chose when their key can't use that one.
  */
-export type Key = { provider: ProviderId; model: string; apiKey: string };
+export type Key = { provider: ProviderId; model: string; apiKey: string; budget?: number };
 
 async function withCheap<T>(key: Key, run: (model: string) => Promise<T>): Promise<T> {
   try {

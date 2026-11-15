@@ -4,7 +4,7 @@ import { db } from "../db";
 import { getActiveKey, getChat, loadChat } from "../data";
 import { encrypt } from "../crypto";
 import { alive } from "../trash";
-import { CHAR_BUDGET, embedModelFor } from "../ai/models";
+import { budgetFor, embedModelFor } from "../ai/models";
 import { cheapAsk, type Ask, type Key } from "../ai/cheap";
 import { buildGraph } from "../graph";
 import { linkMemories, loadGraphRows, mergeNodes, syncGraph } from "../graph-store";
@@ -138,7 +138,7 @@ async function mineEvidence(person: Person, ask: Ask, key: Key) {
     const items = todo.flatMap((e) => evidenceItem(e, `${name(e.fromId)} ${e.rel}${e.label ? ` (${e.label})` : ""} ${name(e.toId)}. Memory: "${e.fact!.text.slice(0, 200)}"`, byId, msgs, after) ?? []);
     const found = [];
     // ponytail: a claim's block is rendered twice (once to size it); cache it if the batches ever get big.
-    for (const group of chunk(items, (it) => renderItem(it, 1, msgs, chat.tzOffset).length, Math.min(24_000, CHAR_BUDGET[key.provider] * 0.4))) {
+    for (const group of chunk(items, (it) => renderItem(it, 1, msgs, chat.tzOffset).length, Math.min(24_000, budgetFor(key) * 0.4))) {
       const { items: answer } = await ask(evidenceAnswerSchema, evidencePrompt(group.map((it, i) => renderItem(it, i + 1, msgs, chat.tzOffset)), { me: chat.myName, them: chat.theirName }));
       found.push(...acceptEvidence(answer, group, msgs, chat.myName));
     }

@@ -9,7 +9,7 @@ import { providerError } from "./provider";
  */
 export async function streamResponse(
   stream: AsyncIterable<TextStreamPart<ToolSet>>,
-  opts: { label: string; onDone: () => Promise<void>; headers?: Record<string, string> },
+  opts: { label: string; onDone: () => Promise<void>; headers?: Record<string, string>; onError?: (e: unknown) => Promise<Response | undefined> },
 ) {
   const parts = stream[Symbol.asyncIterator]();
   const next = async (): Promise<{ text: string } | { error: unknown } | null> => {
@@ -24,6 +24,8 @@ export async function streamResponse(
   if (!first || "error" in first) {
     const err = first?.error ?? new Error("The model returned nothing");
     console.error(`${opts.label} failed`, (err as Error)?.message);
+    const handled = await opts.onError?.(err);
+    if (handled) return handled;
     return Response.json({ error: providerError(err) }, { status: 502 });
   }
 

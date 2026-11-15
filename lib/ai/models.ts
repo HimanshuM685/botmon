@@ -42,6 +42,8 @@ export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
 
 // Chat history budget in characters; Gemini has a ~1M token window, others are smaller.
 export const CHAR_BUDGET: Record<ProviderId, number> = { GEMINI: 600_000, OPENAI: 200_000, GROK: 400_000, GROQ: 40_000, NIM: 60_000, OPENROUTER: 200_000 };
+/** Chars per call for a key: its learned budget (getActiveKey, lib/data.ts) or the provider default. */
+export const budgetFor = (key: { provider: ProviderId; budget?: number }) => key.budget ?? CHAR_BUDGET[key.provider];
 
 /**
  * The cheapest capable model of each provider, for background graph work (lib/graph/job.ts): categories, typed

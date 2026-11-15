@@ -7,7 +7,7 @@ import { alive } from "./trash";
 import { decrypt, decryptBuffer, encrypt } from "./crypto";
 import { voiceProfile, type Voice } from "./voice";
 import type { Msg } from "./parsers/types";
-import type { ProviderId } from "./ai/models";
+import { CHAR_BUDGET, type ProviderId } from "./ai/models";
 import { computeStats, type ChatStats } from "./stats";
 import { contextHash } from "./context";
 import { capText } from "./upload";
@@ -77,7 +77,9 @@ export async function getActiveKey(userId: string) {
   ]);
   const k = keys.find((x) => x.provider === user?.defaultProvider) ?? keys[0];
   if (!k) return null;
-  return { provider: k.provider as ProviderId, model: k.model, apiKey: decrypt(k.cipher) };
+  const provider = k.provider as ProviderId;
+  // Chars per call: the provider default, or less once the key's rate limit said so (rateLimit, lib/ai/provider.ts).
+  return { id: k.id, provider, model: k.model, apiKey: decrypt(k.cipher), budget: Math.min(k.charBudget ?? Infinity, CHAR_BUDGET[provider]) };
 }
 
 /** Fingerprint of the person's notes and alive timeline right now (see lib/context.ts). */

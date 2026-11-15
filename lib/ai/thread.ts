@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
-import { CHAR_BUDGET } from "./models";
+import { budgetFor } from "./models";
 import { cheapText, type Key } from "./cheap";
 import { COACH_HISTORY } from "./coach";
 import { KEEP_RECENT, needsCompaction, renderForSummary, splitForSummary, summaryPrompt } from "./compact";
@@ -23,10 +23,10 @@ export async function compactThread(threadId: string, personName: string, key: K
   const thread = await db.coachThread.findUnique({ where: { id: threadId }, select: { id: true, summary: true, summaryThroughId: true } });
   if (!thread) return;
   const rows = (await recentMessages(thread)).reverse();
-  if (!needsCompaction(rows, CHAR_BUDGET[key.provider])) return;
+  if (!needsCompaction(rows, budgetFor(key))) return;
   const { older } = splitForSummary(rows);
   const text = renderForSummary(older);
   if (!older.length || !text) return;
-  const summary = (await cheapText(key, summaryPrompt(thread.summary, text.slice(-Math.floor(CHAR_BUDGET[key.provider] * 0.5)), personName))).trim();
+  const summary = (await cheapText(key, summaryPrompt(thread.summary, text.slice(-Math.floor(budgetFor(key) * 0.5)), personName))).trim();
   if (summary) await db.coachThread.update({ where: { id: thread.id }, data: { summary: summary.slice(0, 6_000), summaryThroughId: older.at(-1)!.id } });
 }

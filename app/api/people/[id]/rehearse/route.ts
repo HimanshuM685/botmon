@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { getChat, getChatStats, loadChat, getVoices } from "@/lib/data";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
-import { CHAR_BUDGET } from "@/lib/ai/models";
+import { budgetFor } from "@/lib/ai/models";
 import { beginTurn } from "@/lib/ai/turn";
 import { buildGraph, THEM } from "@/lib/graph";
 import { loadGraphRows } from "@/lib/graph-store";
@@ -63,7 +63,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     boundaries: graph.edges.filter((e) => e.fromId === them?.id && ["AVOIDS", "FEARS", "DISLIKES"].includes(e.rel)).slice(-30).map((e) => graph.renderEdge(e)),
     voice: theirVoice ? voiceForPrompt(theirVoice, "them") : undefined,
     said,
-    budget: CHAR_BUDGET[key.provider],
+    budget: budgetFor(key),
   });
 
   let text: string;
