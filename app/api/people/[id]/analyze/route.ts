@@ -13,6 +13,7 @@ import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
 import { scheduleGraphJob } from "@/lib/graph/job";
+import { historyFor } from "@/lib/history-store";
 
 export const maxDuration = 300;
 /** Memories last changed before this could not have had a feeling set or cleared by the user (migration memory_feeling). */
@@ -46,6 +47,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "Already up to date with this chat. Add a newer export, or run a full re-read." }, { status: 409 });
   const mode = prev ? "incremental" : "full";
 
+  // Long chats are read whole: every period before the newest stretch must be read (history route) first,
+  // so a read never silently skips months.
+  const msgs = await loadChat(chat.cipher);
+  const history = await historyFor(chat, msgs, CHAR_BUDGET[key.provider]);
+  if (!history.ready)
+    return Response.json({ error: `Read the rest of this chat's history first (${history.todo} of ${history.parts} parts left).`, code: "history_needed", todo: history.todo }, { status: 409 });
+
   // Record the attempt first, then count: concurrent requests all see each other's rows,
   // and failed or aborted runs still count toward the limit.
   const run = await db.analysis.create({
@@ -57,8 +65,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "Hourly limit reached. Try again later." }, { status: 429 });
   }
 
-  const [msgs, allFacts] = await Promise.all([
-    loadChat(chat.cipher),
+  const [allFacts] = await Promise.all([
     db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, createdAt: true, updatedAt: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
@@ -68,7 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const emotion = emotionMap(facts);
   const graph = await loadGraph(person, facts);
   const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
-  const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
+  const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const stats = await getChatStats(chat);
   const voice = voiceProfile(msgs, chat.myName);
   const prompt = buildPrompt({
@@ -89,6 +96,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     graph: graphBrief,
     known,
     voice: voice ? voiceForPrompt(voice) : undefined,
+    history: history.text || undefined,
+    historyTo: history.to,
   });
   const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
 

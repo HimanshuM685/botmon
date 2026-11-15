@@ -131,9 +131,29 @@ model ChatUpload {
   deletedAt DateTime?
   /// The chat this one pushed to the trash (new upload, moved here, restored): removing this one brings that one back.
   replacedId String?
+  /// Set while its history is being read (app/api/people/[id]/history), so only one run per chat at a time
+  historyLockUntil DateTime?
   person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+  chapters  ChatChapter[]
 
   @@index([personId])
+}
+
+/// One period of a long chat, read once (lib/history.ts). level 0: a chapter of messages; 1: an era, several
+/// chapters condensed when the whole history no longer fits a prompt. `cipher` is the result JSON, encrypted.
+model ChatChapter {
+  id        String     @id @default(cuid())
+  chatId    String
+  fromTs    DateTime
+  toTs      DateTime
+  msgCount  Int
+  level     Int        @default(0)
+  cipher    String
+  model     String
+  createdAt DateTime   @default(now())
+  chat      ChatUpload @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, level, fromTs])
 }
 
 model Analysis {
@@ -167,6 +187,8 @@ model PersonFact {
   happenedAt DateTime?
   source     FactSource
   analysisId String?
+  /// Learned from a chapter of this chat's history (not from a read): erased with the chat if it was the wrong one.
+  chatId     String?
   /// People, places, topics and events this memory is about, normalised (lib/facts.ts normalizeEntity).
   /// Memories sharing one are connected: the memory graph.
   entities   String[]     @default([])
@@ -182,6 +204,7 @@ model PersonFact {
   linksTo    MemoryLink[] @relation("to")
   edges      MemoryEdge[]
 
+  @@index([chatId])
   @@index([personId, deletedAt])
 }
 

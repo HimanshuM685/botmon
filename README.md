@@ -58,5 +58,6 @@ Trash purge: deleted items stay 30 days; nothing is erased automatically. Run `n
 
 ## Scripts
 
-- `npm test` — parser, stats and crypto tests
+- `npm test` — pure unit tests: parsers, stats, crypto, the memory graph, findings, coach tools, persona, and the ten scenario fixtures
 - `npm run lint`, `npm run build`
+- `npm run eval` — runs the scenario fixtures (`tests/fixtures/scenarios`) through a real model: extraction, categories, evidence, then the coach. Needs `EVAL_PROVIDER` and `EVAL_API_KEY` (optional `EVAL_MODEL`, `EVAL_RUNS`, `EVAL_ONLY`); skipped without them

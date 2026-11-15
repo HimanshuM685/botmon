@@ -150,3 +150,28 @@ export type Analysis = Omit<Generated, "status"> & {
   /** How many of the user's own messages the suggestions' typing style was measured from (lib/voice.ts). */
   voiceFrom?: number;
 };
+
+/** One period of a long chat, read once (lib/history.ts). Its memories go to the timeline like a read's. */
+export const chapterSchema = z.object({
+  moments: z
+    .array(z.object({ when: z.string().describe("YYYY-MM-DD HH:MM from the chat"), quote: z.string().describe("Exact short quote"), reading: z.string().describe("What it shows about them or the two of you") }))
+    .describe("Write this FIRST. 5-12 of the most telling moments of this period, spread across it."),
+  phase: z.string().describe("2-6 words naming this period, e.g. 'Getting close over exams', 'Cold patch after the fight'"),
+  summary: z
+    .string()
+    .describe("6-12 sentences, in order: what happened between them in this period, how close they were, how they were feeling, who reached out, what changed from the start to the end of it. Name people, places and dates."),
+  mood: z.string().describe("How they were in this period, emotionally"),
+  keyFacts: analysisSchema.shape.keyFacts,
+  importantDates: analysisSchema.shape.importantDates,
+  conflicts: analysisSchema.shape.conflicts,
+  openAtEnd: z.array(z.string()).catch([]).describe("What was still unresolved at the end of this period: questions, promises, plans"),
+});
+export type ChapterResult = z.infer<typeof chapterSchema>;
+
+/** Several chapters condensed, when the whole history no longer fits a prompt. */
+export const eraSchema = z.object({
+  phase: z.string().describe("2-6 words naming this stretch"),
+  summary: z.string().describe("8-14 sentences keeping every turning point, with dates, names and how they felt; what changed across it"),
+  turningPoints: z.array(z.string()).catch([]).describe("Dated turning points, e.g. '2026-02-14: first fight, about her ex'"),
+});
+export type EraResult = z.infer<typeof eraSchema>;

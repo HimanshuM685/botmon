@@ -62,6 +62,8 @@ export function buildCoachContext(p: {
   voice?: string;
   /** The older part of this conversation, summarised (lib/ai/compact.ts). */
   summary?: string | null;
+  /** Long chats: every earlier period, read once (lib/history-store.ts historyFor). */
+  history?: string;
 }) {
   const now = p.now ?? Date.now();
   const tz = p.chat?.tzOffset ?? 0;
@@ -82,6 +84,7 @@ export function buildCoachContext(p: {
   if (p.graph) parts.push(`<graph note="links between memories around this message; lines with ! are findings from those links">\n${p.graph}\n</graph>`);
   if (p.known?.length) parts.push(`Names in the graph (reuse them in remember, recall and connect): ${p.known.join(", ")}`);
   if (p.voice) parts.push(p.voice);
+  if (p.history) parts.push(`<chat_history note="the whole chat, period by period, oldest first; recent messages follow">\n${p.history}\n</chat_history>`);
   if (p.summary) parts.push(`<conversation_so_far note="the earlier part of this conversation, summarised; the messages below continue from it">\n${p.summary}\n</conversation_so_far>`);
   if (p.chat) {
     const { lines, trimmed } = fitToBudget(p.chat.msgs, p.budget, tz);

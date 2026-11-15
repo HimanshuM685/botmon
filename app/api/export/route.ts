@@ -13,7 +13,7 @@ export async function GET() {
   const people = await db.person.findMany({
     where: { userId, deletedAt: undefined }, // trashed people too
     include: {
-      chats: true,
+      chats: { include: { chapters: { orderBy: [{ level: "asc" }, { fromTs: "asc" }] } } },
       analyses: { orderBy: { createdAt: "asc" } },
       facts: { orderBy: { createdAt: "asc" }, include: { linksFrom: { select: { toId: true, kind: true } } } },
       threads: { orderBy: { createdAt: "asc" }, include: { messages: { orderBy: { createdAt: "asc" } } } },
@@ -27,7 +27,12 @@ export async function GET() {
     people.map(async ({ chats, edges, ...p }) => ({
       ...p,
       edges: edges.map((e) => exportEdge(e, decrypt)),
-      chats: await Promise.all(chats.map(async ({ cipher, ...c }) => ({ ...c, messages: await loadChat(cipher) }))),
+      chats: await Promise.all(chats.map(async ({ cipher, chapters, ...c }) => ({
+        ...c,
+        messages: await loadChat(cipher),
+        // What each period of a long chat held, as read (lib/history.ts).
+        history: chapters.map(({ cipher: h, ...ch }) => ({ ...ch, result: JSON.parse(decrypt(h)) })),
+      }))),
     })),
   );
   return new Response(JSON.stringify({ exportedAt: new Date(), people: data }, null, 2), {

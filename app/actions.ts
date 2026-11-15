@@ -2,6 +2,7 @@
 
 import { generateText } from "ai";
 import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@/lib/facts";
+import { loadUnits } from "@/lib/history-store";
 import { pruneGraph, retagMemory, saveMemories, syncGraph } from "@/lib/graph-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { revalidatePath } from "next/cache";
@@ -227,7 +228,7 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
       db.chatUpload.update({ where: { id }, data: { deletedAt: null, ...(current?.replacedId === id ? {} : { replacedId: current?.id ?? null }) } }),
       ...again.queries,
     ]);
-    await rebuildMemories(person, again.reads);
+    await rebuildMemories(person, again.reads, id);
   } else if (kind.data !== "person") await setDeleted(kind.data, id, null);
   if (kind.data === "fact") await syncGraph({ id: item.personId });
 
@@ -262,13 +263,19 @@ async function reattachChat(chatId: string, personId: string, at?: Date) {
  * Put back the memories of reads that just returned: taken again from what each read found (oldest read first),
  * skipping anything already on the timeline or deleted by the user, and tied into the graph.
  */
-async function rebuildMemories(person: { id: string; name: string }, readIds: string[]) {
-  if (!readIds.length) return;
-  const [reads, existing] = await Promise.all([
+async function rebuildMemories(person: { id: string; name: string }, readIds: string[], chatId?: string) {
+  const [reads, existing, chapters] = await Promise.all([
     db.analysis.findMany({ where: { id: { in: readIds }, deletedAt: undefined }, orderBy: { createdAt: "asc" }, select: { id: true, result: true } }),
     db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, select: { text: true } }),
+    chatId ? loadUnits(chatId) : [],
   ]);
   const known = existing.map((f) => f.text);
+  // The chat's history chapters first (oldest periods), then its reads.
+  for (const c of chapters.filter((u) => u.level === 0)) {
+    const fresh = newFacts(known, factsFromAnalysis(c.result as unknown as Analysis));
+    await saveMemories(person, fresh, { source: "ANALYSIS", chatId });
+    known.push(...fresh.map((f) => f.text));
+  }
   for (const r of reads) {
     if (!r.result) continue;
     const fresh = newFacts(known, factsFromAnalysis(r.result as unknown as Analysis));
@@ -291,6 +298,8 @@ async function detachChat(chat: OwnedChat, now: Date) {
   return [
     db.analysis.updateMany({ where: { id: { in: reads }, deletedAt: null }, data: { deletedAt: now } }),
     db.personFact.deleteMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads } } }),
+    // Memories its history chapters taught (lib/history.ts): the chapters stay with the chat, wherever it goes.
+    db.personFact.deleteMany({ where: { personId: chat.personId, chatId: chat.id } }),
     ...(chat.replacedId ? [db.chatUpload.updateMany({ where: { id: chat.replacedId, personId: chat.personId, deletedAt: { not: null } }, data: { deletedAt: null } })] : []),
     // Nothing on this person may keep pointing at the chat that left, or removing that one later would bring this one back.
     db.chatUpload.updateMany({ where: { personId: chat.personId, replacedId: chat.id }, data: { replacedId: null } }),
@@ -324,7 +333,7 @@ export async function moveChat(chatId: string, toPersonId: string): Promise<Acti
     db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, replacedId: theirs?.id ?? null } }),
     ...again.queries,
   ]);
-  await Promise.all([pruneGraph(chat.personId), rebuildMemories(to, again.reads)]);
+  await Promise.all([pruneGraph(chat.personId), rebuildMemories(to, again.reads, chat.id)]);
   revalidatePath("/", "layout");
   return { ok: true };
 }

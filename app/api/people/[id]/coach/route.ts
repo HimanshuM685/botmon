@@ -26,6 +26,7 @@ import { buildGraph } from "@/lib/graph";
 import { loadGraphRows, saveMemories, syncGraph } from "@/lib/graph-store";
 import type { RelationId } from "@/lib/ai/prompt";
 import { voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { historyFor } from "@/lib/history-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { newSince } from "@/lib/graph/findings";
 import { focusNodes as focusOf } from "@/lib/graph/vectors";
@@ -94,9 +95,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const graphBrief = graph.brief(focusNodes.map((n) => n.id), fresh).slice(0, 12_000);
   const known = graph.known();
   const used = memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + (thread.summary?.length ?? 0) + transcript.length + 6_000;
-  const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
+  // Long chats: what every earlier period held, read once (lib/history.ts). Whatever is read so far is used.
+  const chatHistory = chat ? (await historyFor(chat, msgs, total)).text : "";
+  const chatBudget = Math.max(3_000, total - used - chatHistory.length);
 
   const allTools = coachTools({
     msgs,
@@ -152,6 +155,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     budget: chatBudget,
     voice: voice ? voiceForPrompt(voice) : undefined,
     summary: thread.summary,
+    history: chatHistory,
   });
   // What this reply is built from, kept on the reply for the "why?" toggle.
   const shown = [...graph.tensions(focusNodes.map((n) => n.id), 8, true), ...graph.tensions([], 6)];

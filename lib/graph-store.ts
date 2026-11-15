@@ -123,7 +123,7 @@ export async function pruneGraph(personId: string) {
 }
 
 /** Save new memories and tie them into the graph. Returns their ids, in order. */
-export async function saveMemories(person: Person, facts: MemoryInput[], meta: { source: "ANALYSIS" | "COACH" | "USER"; analysisId?: string }, key?: EmbedKey) {
+export async function saveMemories(person: Person, facts: MemoryInput[], meta: { source: "ANALYSIS" | "COACH" | "USER"; analysisId?: string; chatId?: string }, key?: EmbedKey) {
   if (!facts.length) return { ids: [] as string[], delta: emptyDelta() };
   const rows = facts.map(({ triples, ...f }) => ({ id: crypto.randomUUID(), triples, tags: f.entities, fact: f }));
   await db.personFact.createMany({ data: rows.map((r) => ({ ...r.fact, id: r.id, personId: person.id, ...meta })) });

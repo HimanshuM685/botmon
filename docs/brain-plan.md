@@ -157,3 +157,7 @@ Updated after every phase: what changed, what was deferred.
 - Phase 8 done. `layout(facts, edges, findings)` stays pure and now returns `marks` (typed person-to-topic edges placed along the topic's spoke) and `flags` (findings per topic); `edgeColor` (tone over relation). Clicking a mark opens its detail and, when a line is stored, fetches it with the `edgeQuote` server action (owner-scoped, decrypted on demand; the cipher never reaches the client).
   - At most 4 marks per topic (the latest); superseded edges are not drawn.
   - Not verified in a browser: I could not sign in to the app (Google sign-in, your database), so the map, the Practise tab and the "why?" toggle are checked by types, lint, build and unit tests only.
+- Evals done. Ten fixtures in `tests/fixtures/scenarios/`; `tests/scenarios.ts` builds each graph the way the app does; `tests/scenarios.test.ts` asserts expected edges and findings (model answers given by the fixture). `scripts/eval.mts` + `npm run eval` runs the same chats through a real model, in memory, no database.
+  - Found by the fixtures: singular "dog" did not find the node "dogs"; `spellScore` now treats a plural as the same word.
+  - Not run: `npm run eval` with a key. It was only run in skip mode, so "the cheese scenario passes on Gemini Flash" is unproven.
+  - History: the work landed as one commit (`3f9a216`), not one per concern. Signed commits needed a GPG passphrase I could not enter.
