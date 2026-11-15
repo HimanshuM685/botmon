@@ -169,8 +169,11 @@ model ChatUpload {
   readNextAt  DateTime?
   /// Why the last background read stopped
   readError   String?
-  /// Failed steps in a row (overloaded model, unreadable answer): sets the backoff and when to give up (lib/ai/limits.ts)
-  readTries   Int        @default(0)
+  /// Failed steps in a row, counted apart (lib/ai/limits.ts afterFailure): overloaded or too slow, and unreadable answers
+  readTries    Int        @default(0)
+  readBadTries Int        @default(0)
+  /// Why the job is waiting until readNextAt: "rate" | "busy" | "output" | "hourly"; null when a step is simply due
+  readWait     String?
   /// Progress of the background read, kept by the job so the page can poll without decrypting the chat
   readParts     Int?
   readPartsDone Int?

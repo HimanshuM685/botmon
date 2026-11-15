@@ -7,15 +7,15 @@ import { alive } from "@/lib/trash";
 import { getActiveKey, loadChat } from "@/lib/data";
 import { budgetFor } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
-import { afterFailure, charsFor, retryable } from "@/lib/ai/limits";
+import { afterFailure, charsFor, retryable, type Tries } from "@/lib/ai/limits";
 import { seedFor } from "@/lib/ai/stream";
 import { buildChapterPrompt, buildEraPrompt, type RelationId } from "@/lib/ai/prompt";
 import { analysisSchema, chapterSchema, eraSchema, type Analysis, type ChapterResult } from "@/lib/ai/schema";
 import { eraRange, historyWork, type Range } from "@/lib/history";
 import { claimHistoryRun, loadUnits, releaseHistoryRun, saveUnit } from "@/lib/history-store";
-import { learnFromChat } from "@/lib/self/store";
+import { learnFromChat, selfChanged } from "@/lib/self/store";
 import { factsFromAnalysis, newFacts } from "@/lib/facts";
-import { loadGraph, saveMemories } from "@/lib/graph-store";
+import { loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { toLocal } from "@/lib/stats";
 import { prepareRead } from "./run";
@@ -64,7 +64,7 @@ export function kick(origin: string, chatId: string, delayMs = 0, startedAt = Da
 }
 
 export async function startRead(origin: string, chatId: string, mode: "auto" | "full") {
-  await db.chatUpload.update({ where: { id: chatId }, data: { readMode: mode, readNextAt: new Date(), readError: null, readTries: 0, readParts: null, readPartsDone: null } });
+  await db.chatUpload.update({ where: { id: chatId }, data: { readMode: mode, readNextAt: new Date(), readError: null, readTries: 0, readBadTries: 0, readWait: null, readParts: null, readPartsDone: null } });
   kick(origin, chatId);
 }
 
@@ -76,13 +76,17 @@ export function resumeIfStalled(origin: string, chat: { id: string; readMode: st
   if (chat.readMode && !locked && (chat.readNextAt?.getTime() ?? 0) < now - STALLED_MS) kick(origin, chat.id);
 }
 
-const fail = (chatId: string, error: string) => db.chatUpload.update({ where: { id: chatId }, data: { readMode: null, readNextAt: null, readError: error } });
-const due = (chatId: string, at: Date, extra: { readTries?: number } = {}) => db.chatUpload.update({ where: { id: chatId }, data: { readNextAt: at, ...extra } });
+const fail = (chatId: string, error: string) => db.chatUpload.update({ where: { id: chatId }, data: { readMode: null, readNextAt: null, readWait: null, readError: error } });
+/** Wait until `at`, saying why (the page shows it), with the failure counts so far. */
+const due = (chatId: string, at: Date, readWait: string, tries?: Tries) =>
+  db.chatUpload.update({ where: { id: chatId }, data: { readNextAt: at, readWait, ...(tries ? { readTries: tries.busy, readBadTries: tries.bad } : {}) } });
 /** Quick retries inside one step (the SDK waits 2, 4, 8s); longer outages are the job's backoff. */
 const QUICK_RETRIES = 3;
-/** A step's model calls, retries included, stop after this: the request must end inside STEP_MAX_MS, or its lock
- * and the chain are lost until someone opens the page. A timed-out step counts as a busy model and is retried. */
-const CALL_MS = 240_000;
+/**
+ * A step's model call, retries included, must end this long after the step started: the request must end inside
+ * STEP_MAX_MS, or its lock and the chain are lost until someone opens the page. Timed out: the parts get smaller.
+ */
+const STEP_CALLS_MS = STEP_MAX_MS - 40_000;
 
 /** Run one step of the chat's background read. `again`: ms until the next step; undefined when the chain stops here. */
 export async function step(chatId: string): Promise<{ again?: number }> {
@@ -92,7 +96,9 @@ export async function step(chatId: string): Promise<{ again?: number }> {
   if (wait > 0) return { again: wait };
   if (!(await claimHistoryRun(chat.id, LOCK_MS))) return {}; // another step is running; it carries the chain
 
-  const abortSignal = AbortSignal.timeout(CALL_MS);
+  const startedAt = Date.now();
+  // Started just before each model call, so loading a long chat doesn't eat the model's time.
+  const callSignal = () => AbortSignal.timeout(Math.max(30_000, STEP_CALLS_MS - (Date.now() - startedAt)));
   const person = await db.person.findFirst({ where: { id: chat.personId, ...alive, user: alive } });
   const key = person && (await getActiveKey(person.userId));
   try {
@@ -104,8 +110,8 @@ export async function step(chatId: string): Promise<{ again?: number }> {
     const stored = await loadUnits(chat.id);
     const work = historyWork(msgs, stored, budget, chat.tzOffset);
     // After an unreadable answer, greedy sampling would give the same one again: loosen it a little.
-    const retrying = chat.readTries > 0;
-    const sampling = (seed: string) => ({ temperature: retrying ? 0.3 : 0, seed: seedFor(retrying ? `${seed}:${chat.readTries}` : seed), maxRetries: QUICK_RETRIES, abortSignal });
+    const retrying = chat.readBadTries > 0;
+    const sampling = (seed: string) => ({ temperature: retrying ? 0.3 : 0, seed: seedFor(retrying ? `${seed}:${chat.readBadTries}` : seed), maxRetries: QUICK_RETRIES, abortSignal: callSignal() });
     const who = { personName: person.name, relation: person.relation as RelationId, gender: person.gender, myName: chat.myName, theirName: chat.theirName };
     // Rows from an older shape of this chat (a gap filled mid-chat, a smaller budget): read again.
     if (work.stale.length) await db.chatChapter.deleteMany({ where: { chatId: chat.id, id: { in: work.stale.map((u) => u.id) } } });
@@ -148,25 +154,40 @@ export async function step(chatId: string): Promise<{ again?: number }> {
       if ("refused" in read) {
         const { code, error } = read.refused!;
         if (code === "up_to_date") return (await cancelRead(chat.id), {});
-        if (code === "hourly") return (await due(chat.id, new Date(Date.now() + 600_000)), { again: 600_000 });
+        if (code === "hourly") return (await due(chat.id, new Date(Date.now() + 600_000), "hourly"), { again: 600_000 });
         return (await fail(chat.id, error), {});
       }
+      // sampling(chat.id) keeps read.call's seed (seedFor(chat.id)) until an unreadable answer loosens it.
+      let output: Analysis;
       try {
-        const { output } = await generateText({ model, ...read.call, ...(retrying ? { temperature: 0.3, seed: read.call.seed + chat.readTries } : {}), output: Output.object({ schema: analysisSchema }), maxRetries: QUICK_RETRIES, abortSignal });
-        await read.finish(output);
+        output = (await generateText({ model, ...read.call, ...sampling(chat.id), output: Output.object({ schema: analysisSchema }) })).output;
       } catch (e) {
         // A failed attempt must not use up the hourly limit while the job retries.
         await db.analysis.delete({ where: { id: read.runId } }).catch(() => undefined);
         throw e;
       }
-      await db.chatUpload.update({ where: { id: chat.id }, data: { readMode: null, readNextAt: null, readTries: 0, readPartsDone: chat.readParts } });
+      try {
+        await read.finish(output);
+      } catch (e) {
+        // Saving stopped halfway: take back what this run saved, so the retry starts clean instead of saving it twice.
+        // Erased, not trashed, as when a chat leaves mid-read (lib/read/run.ts).
+        await db.$transaction([
+          db.personFact.deleteMany({ where: { personId: person.id, source: "ANALYSIS", analysisId: read.runId } }),
+          db.selfEvidence.deleteMany({ where: { personId: person.id, analysisId: read.runId } }),
+          db.analysis.deleteMany({ where: { id: read.runId } }),
+        ]).catch((x) => console.error("read job: clean-up after a failed save failed", (x as Error)?.message));
+        await pruneGraph(person.id).catch(() => undefined);
+        await selfChanged(person.userId).catch(() => undefined);
+        throw e;
+      }
+      await db.chatUpload.update({ where: { id: chat.id }, data: { readMode: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0 } });
       scheduleGraphJob(person.userId, person);
       return {};
     }
     // A step done: failures start counting again, and the page sees the progress.
     const now = historyWork(msgs, await loadUnits(chat.id), budget, chat.tzOffset);
     const parts = now.plan.length + now.groups.length;
-    await db.chatUpload.update({ where: { id: chat.id }, data: { readNextAt: new Date(), readTries: 0, readParts: parts, readPartsDone: parts - now.todo.length - now.eraTodo.length } });
+    await db.chatUpload.update({ where: { id: chat.id }, data: { readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readParts: parts, readPartsDone: parts - now.todo.length - now.eraTodo.length } });
     return { again: 0 };
   } catch (e) {
     const failure = retryable(e);
@@ -175,13 +196,16 @@ export async function step(chatId: string): Promise<{ again?: number }> {
       const smaller = Math.min(charsFor(failure.tooBigFor), Math.floor(budgetFor(key) * 0.7));
       if (smaller < MIN_BUDGET) return (await fail(chat.id, `Your key allows only ${failure.tooBigFor.toLocaleString("en")} tokens per minute, too little to read this chat. Pick a model or provider with a higher limit in Settings.`), {});
       await db.apiKey.update({ where: { id: key.id }, data: { charBudget: smaller } });
-      await due(chat.id, new Date(Date.now() + failure.waitMs));
+      await due(chat.id, new Date(Date.now() + failure.waitMs), "rate");
       return { again: failure.waitMs };
     }
-    const next = failure && afterFailure(failure, chat.readTries);
+    if (failure?.kind === "slow" && key && Math.floor(budgetFor(key) * 0.7) >= MIN_BUDGET)
+      // The call didn't fit in one step's time: smaller parts from now on (stale chapters are re-planned next step).
+      await db.apiKey.update({ where: { id: key.id }, data: { charBudget: Math.floor(budgetFor(key) * 0.7) } });
+    const next = failure && afterFailure(failure, { busy: chat.readTries, bad: chat.readBadTries });
     if (next && "waitMs" in next) {
-      console.info(`read job: ${failure!.kind}, retry ${next.tries} in ${Math.round(next.waitMs / 1000)}s`, key?.provider, key?.model, (e as Error)?.message?.slice(0, 160));
-      await due(chat.id, new Date(Date.now() + next.waitMs), { readTries: next.tries });
+      console.info(`read job: ${failure!.kind}, waiting ${Math.round(next.waitMs / 1000)}s`, next.tries, key?.provider, key?.model, (e as Error)?.message?.slice(0, 160));
+      await due(chat.id, new Date(Date.now() + next.waitMs), next.reason, next.tries);
       return { again: next.waitMs };
     }
     console.error("read job: step failed", key?.provider, key?.model, (e as Error)?.message);
@@ -206,12 +230,15 @@ export async function readStatus(chat: { id: string; cipher: string; tzOffset: n
   };
 }
 
-type JobRow = { readMode: string | null; readNextAt: Date | null; readError: string | null; readTries: number; readParts: number | null; readPartsDone: number | null };
+/** The columns jobStatus and resumeIfStalled need: what the page's poll loads. */
+export const JOB_FIELDS = { id: true, historyLockUntil: true, readMode: true, readNextAt: true, readWait: true, readError: true, readTries: true, readBadTries: true, readParts: true, readPartsDone: true } as const;
+
+type JobRow = { readMode: string | null; readNextAt: Date | null; readWait: string | null; readError: string | null; readTries: number; readBadTries: number; readParts: number | null; readPartsDone: number | null };
 
 /** The background read as the page shows it: progress, any wait and why, or why it stopped. */
 export const jobStatus = (chat: JobRow) => ({
   job: chat.readMode
-    ? { mode: chat.readMode, nextAt: chat.readNextAt?.toISOString() ?? null, tries: chat.readTries, parts: chat.readParts, done: chat.readPartsDone }
+    ? { mode: chat.readMode, nextAt: chat.readNextAt?.toISOString() ?? null, wait: chat.readWait, tries: chat.readTries + chat.readBadTries, parts: chat.readParts, done: chat.readPartsDone }
     : null,
   failed: chat.readError,
 });

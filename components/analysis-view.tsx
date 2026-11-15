@@ -30,6 +30,13 @@ function overlay(saved: DeepPartial<Analysis> | undefined, patch: DeepPartial<Mo
 }
 
 export type ChatNumber = { label: string; value: string; hint: string };
+/** Why a background read is waiting (lib/read/job.ts readWait). */
+const WAIT_TEXT = {
+  rate: "waiting for your AI provider's rate limit",
+  busy: "your AI model is busy, trying again",
+  output: "your AI model's answer couldn't be read, asking again",
+  hourly: "hourly read limit reached, carrying on",
+} as const;
 const menuItem = "block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-ink-3 disabled:opacity-50";
 
 export function AnalysisView({ personId, history, hasChat, readingInBackground = false, readFailed = null, canRun, canSync, state, advice, chatNumbers, compareWith, goals = [] }: {
@@ -76,8 +83,8 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
   }
   // Every read runs on the server (lib/read/job.ts): long chats part by part, overloaded models and rate limits
   // retried with waits. It goes on when this page is closed; here it is only followed.
-  type Reading = { done: number; total: number; nextAt: string | null; tries: number; rateLimited: boolean };
-  const idle: Reading = { done: 0, total: 0, nextAt: null, tries: 0, rateLimited: false };
+  type Reading = { done: number; total: number; nextAt: string | null; tries: number; wait: "rate" | "busy" | "output" | "hourly" | null };
+  const idle: Reading = { done: 0, total: 0, nextAt: null, tries: 0, wait: null };
   const [reading, setReading] = useState<Reading | null>(readingInBackground ? idle : null);
   const [failed, setFailed] = useState<string | null>(readFailed);
   const [ask, setAsk] = useState<{ mode: "auto" | "full"; todo: number; chars: number; provider: ProviderId } | null>(null);
@@ -89,14 +96,15 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
     let live = true;
     async function poll() {
       const s = await fetch(`${historyUrl}?job=1`).then((r) => r.json()).catch(() => null);
-      if (!live || !s || s.error) return;
+      if (!live || !s) return; // offline for a moment: ask again next time
       if (s.job) {
         // Only a wait worth mentioning: a step that's simply due now isn't one.
         const nextAt = s.job.nextAt && new Date(s.job.nextAt).getTime() > Date.now() + 5_000 ? s.job.nextAt : null;
-        return setReading({ done: s.job.done ?? 0, total: s.job.parts ?? 0, nextAt, tries: s.job.tries, rateLimited: !!nextAt && !s.job.tries });
+        return setReading({ done: s.job.done ?? 0, total: s.job.parts ?? 0, nextAt, tries: s.job.tries, wait: s.job.wait });
       }
+      // Done, stopped, or gone (chat removed, person deleted): stop following either way.
       setReading(null);
-      setFailed(s.failed);
+      setFailed(s.failed ?? s.error ?? null);
       router.refresh(); // the read is saved (or the job stopped: the page shows why)
     }
     void poll();
@@ -248,7 +256,7 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
             {reading.total ? <>Reading your chat: <strong>{reading.done} of {reading.total}</strong> parts</> : <span className="animate-pulse">Reading your chat…</span>}
             {reading.nextAt && (
               <span className="text-amber">
-                {" · "}{reading.rateLimited ? "waiting for your AI provider's rate limit" : `your AI model is busy, trying again (attempt ${reading.tries + 1})`}, around{" "}
+                {" · "}{WAIT_TEXT[reading.wait ?? "busy"]}{reading.tries ? ` (attempt ${reading.tries + 1})` : ""}, around{" "}
                 {new Date(reading.nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
               </span>
             )}
@@ -288,7 +296,7 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
       )}
       {/* No read yet: the chat's own numbers need no AI, so they show straight away. */}
       {!shown && !!chatNumbers?.length && <div className="card p-6 sm:p-8"><Numbers items={chatNumbers} /></div>}
-      {shown && <Report a={shown} live={false} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} progress={selected ? undefined : { baseline: compareWith, goals }} />}
+      {shown && <Report a={shown} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} progress={selected ? undefined : { baseline: compareWith, goals }} />}
     </section>
   );
 }
@@ -318,8 +326,8 @@ function merged(...lists: ((string | undefined)[] | undefined)[]): string[] {
  * Answer first: where things stand, what to do, what to send. Then what to keep in mind.
  * Everything else is grouped by the question it answers and folded until wanted.
  */
-function Report({ a, live, advice, personId, chatNumbers, progress }: {
-  a: DeepPartial<Analysis>; live: boolean; advice?: AdviceStatus; personId: string; chatNumbers?: ChatNumber[];
+function Report({ a, advice, personId, chatNumbers, progress }: {
+  a: DeepPartial<Analysis>; advice?: AdviceStatus; personId: string; chatNumbers?: ChatNumber[];
   /** Only for the newest read: growth and goals are measured up to now, so an older read picked from history shows none. */
   progress?: { baseline?: { at: string; signals: Analysis["signals"] | null }; goals: { id: string; signal: string; fromLevel: number; fromAt: string; toLevel: number | null; achievedAt: string | null }[] };
 }) {
@@ -344,7 +352,6 @@ function Report({ a, live, advice, personId, chatNumbers, progress }: {
     <div className="space-y-4" aria-live="polite">
       <div className="card divide-y divide-line">
         <div className={pad}>
-          {live && <p className="mb-5 animate-pulse text-sm text-mint" aria-busy>Reading the chat… {a.observations?.length ?? 0} moments found</p>}
           {a.status && (
             <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
               <ScoreRing score={score} />
@@ -408,7 +415,7 @@ function Report({ a, live, advice, personId, chatNumbers, progress }: {
                         <span key={j} className="rounded-2xl rounded-bl-md bg-heart/10 px-4 py-2.5 text-sm">{line}</span>
                       ))}
                     </div>
-                    {!live && <button className="mt-2.5 shrink-0 text-xs text-heart hover:underline" onClick={() => copy(s)}>Copy</button>}
+                    {<button className="mt-2.5 shrink-0 text-xs text-heart hover:underline" onClick={() => copy(s)}>Copy</button>}
                   </li>
                 ))}
               </ul>
@@ -460,7 +467,7 @@ function Report({ a, live, advice, personId, chatNumbers, progress }: {
                         </span>
                       )}
                       {/* On hover or focus with a mouse; always shown on touch screens, which have no hover. */}
-                      {!live && sg.level < 4 && (
+                      {sg.level < 4 && (
                         <Link
                           href={`/people/${personId}/coach?improve=${k}`}
                           className="text-heart underline-offset-4 hover:underline focus-visible:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
@@ -568,7 +575,7 @@ function Report({ a, live, advice, personId, chatNumbers, progress }: {
             </Block>
           )}
           <p className="text-sm text-muted">
-            {live ? "Details from this read are saved to the Timeline when it finishes." : <>Everything this read picked up about them is on the <Link href={`/people/${personId}/timeline`} className="text-heart underline-offset-4 hover:underline">Timeline</Link>, where you can edit or remove it.</>}
+            Everything this read picked up about them is on the <Link href={`/people/${personId}/timeline`} className="text-heart underline-offset-4 hover:underline">Timeline</Link>, where you can edit or remove it.
           </p>
         </Fold>
       )}

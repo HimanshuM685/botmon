@@ -52,7 +52,7 @@ export const charsFor = (tokens: number) => Math.floor(tokens * 4 * 0.6);
  * - output: the model answered, but not in the shape asked for (broken or incomplete JSON); weak models do this.
  * Null: a real error that waiting won't fix (bad key, unknown model, chat too long).
  */
-export type Failure = Limit & { kind: "rate" | "busy" | "output" };
+export type Failure = Limit & { kind: "rate" | "busy" | "slow" | "output" };
 
 const OUTPUT_ERRORS = /^AI_(NoObjectGenerated|NoOutputGenerated|NoContentGenerated|JSONParse|TypeValidation|EmptyResponseBody|InvalidResponseData)Error$/;
 const BUSY = /overloaded|high demand|unavailable|temporar|capacity|try again|timed? ?out|fetch failed|network|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|terminated|bad gateway|gateway/i;
@@ -60,9 +60,13 @@ const BUSY = /overloaded|high demand|unavailable|temporar|capacity|try again|tim
 export function retryable(e: unknown): Failure | null {
   const err = ((e as ErrLike)?.lastError ?? e) as ErrLike & { name?: string; isRetryable?: boolean; cause?: { name?: string } };
   const status = err?.statusCode;
-  if (status === 401 || status === 403 || status === 404) return null;
   const rate = rateLimit(e);
   if (rate) return { ...rate, kind: "rate" };
+  // Our own time limit on the call ran out: the call is too big or the model too slow for one step.
+  if (err?.name === "TimeoutError") return { waitMs: 0, kind: "slow" };
+  // Any other 4xx is a real answer about the request (bad key, unknown model, no credits, too long): waiting won't fix it,
+  // whatever its text says ("unavailable", "try again with another model").
+  if (status && status >= 400 && status < 500 && status !== 408) return null;
   if (OUTPUT_ERRORS.test(err?.name ?? "") || OUTPUT_ERRORS.test(err?.cause?.name ?? "")) return { waitMs: 5_000, kind: "output" };
   if ((status && (status >= 500 || status === 408)) || err?.isRetryable || BUSY.test(`${err?.message ?? e} ${err?.responseBody ?? ""}`)) {
     const h = Object.fromEntries(Object.entries(err?.responseHeaders ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
@@ -80,14 +84,20 @@ export const BUSY_TRIES = 28;
 /** A model that answers broken JSON this many times in a row won't get better by itself. */
 export const OUTPUT_TRIES = 4;
 
-/** What to do after a failed step that had already failed `tries` times in a row: wait and try again, or stop. */
-export function afterFailure(f: Failure, tries: number): { waitMs: number; tries: number } | { fail: string } {
-  if (f.kind === "rate") return { waitMs: f.waitMs, tries }; // not counted: a daily cap legitimately takes long
+/** Failures in a row, counted apart: an overloaded model and unreadable answers each have their own limit. */
+export type Tries = { busy: number; bad: number };
+export type Wait = "rate" | "busy" | "output";
+
+/** What to do after a failed step: wait (and why) and try again, or stop. */
+export function afterFailure(f: Failure, tries: Tries): { waitMs: number; tries: Tries; reason: Wait } | { fail: string } {
+  if (f.kind === "rate") return { waitMs: f.waitMs, tries, reason: "rate" }; // not counted: a daily cap legitimately takes long
   if (f.kind === "output")
-    return tries + 1 >= OUTPUT_TRIES
+    return tries.bad + 1 >= OUTPUT_TRIES
       ? { fail: "Your model keeps returning answers that can't be read. Pick a stronger model in Settings and try again. Everything read so far is kept." }
-      : { waitMs: f.waitMs, tries: tries + 1 };
-  return tries + 1 > BUSY_TRIES
-    ? { fail: "Your model has been overloaded for hours. Pick another model in Settings and try again. Everything read so far is kept." }
-    : { waitMs: backoffMs(tries, f.waitMs), tries: tries + 1 };
+      : { waitMs: f.waitMs, tries: { ...tries, bad: tries.bad + 1 }, reason: "output" };
+  return tries.busy + 1 > BUSY_TRIES
+    ? { fail: f.kind === "slow"
+        ? "Your model is too slow to read this chat in time. Pick a faster model in Settings and try again. Everything read so far is kept."
+        : "Your model has been overloaded for hours. Pick another model in Settings and try again. Everything read so far is kept." }
+    : { waitMs: f.kind === "slow" ? 5_000 : backoffMs(tries.busy, f.waitMs), tries: { ...tries, busy: tries.busy + 1 }, reason: "busy" };
 }

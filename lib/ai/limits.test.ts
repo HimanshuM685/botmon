@@ -25,7 +25,10 @@ it("retries an overloaded model, through a RetryError", () => {
   const e = { name: "AI_RetryError", message: "Failed after 2 attempts. Last error: AI_APICallError: This model is currently experiencing high demand.", lastError: { name: "AI_APICallError", statusCode: 503, message: "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later." } };
   expect(retryable(e)).toEqual({ waitMs: 0, kind: "busy" });
   expect(retryable(new TypeError("fetch failed"))?.kind).toBe("busy");
-  expect(retryable(new DOMException("The operation was aborted due to timeout", "TimeoutError"))?.kind).toBe("busy");
+  expect(retryable(new DOMException("The operation was aborted due to timeout", "TimeoutError"))?.kind).toBe("slow");
+  // A 4xx is a real answer, whatever its words.
+  expect(retryable({ statusCode: 400, message: "This model is unavailable for your account, try again with another model" })).toBeNull();
+  expect(retryable({ statusCode: 402, message: "Insufficient credits" })).toBeNull();
   expect(retryable({ name: "AI_NoObjectGeneratedError", message: "No object generated: could not parse the response." })?.kind).toBe("output");
   expect(retryable({ statusCode: 401, message: "Invalid API key" })).toBeNull();
   expect(retryable({ statusCode: 404, message: "model not found" })).toBeNull();
@@ -36,10 +39,13 @@ it("retries an overloaded model, through a RetryError", () => {
 it("backs off, then gives up", () => {
   expect([0, 1, 2, 3, 4, 5, 9].map((t) => backoffMs(t) / 1000)).toEqual([30, 60, 120, 240, 480, 900, 900]);
   expect(backoffMs(0, 90_000)).toBe(90_000);
-  expect(afterFailure({ kind: "busy", waitMs: 0 }, 0)).toEqual({ waitMs: 30_000, tries: 1 });
-  expect(afterFailure({ kind: "busy", waitMs: 0 }, BUSY_TRIES)).toHaveProperty("fail");
-  expect(afterFailure({ kind: "output", waitMs: 5_000 }, OUTPUT_TRIES - 1)).toHaveProperty("fail");
-  expect(afterFailure({ kind: "rate", waitMs: 3_600_000 }, 50)).toEqual({ waitMs: 3_600_000, tries: 50 });
+  const none = { busy: 0, bad: 0 };
+  expect(afterFailure({ kind: "busy", waitMs: 0 }, none)).toEqual({ waitMs: 30_000, tries: { busy: 1, bad: 0 }, reason: "busy" });
+  expect(afterFailure({ kind: "busy", waitMs: 0 }, { busy: BUSY_TRIES, bad: 0 })).toHaveProperty("fail");
+  expect(afterFailure({ kind: "output", waitMs: 5_000 }, { busy: 0, bad: OUTPUT_TRIES - 1 })).toHaveProperty("fail");
+  // Overloads before don't use up the tries for unreadable answers.
+  expect(afterFailure({ kind: "output", waitMs: 5_000 }, { busy: 3, bad: 0 })).toEqual({ waitMs: 5_000, tries: { busy: 3, bad: 1 }, reason: "output" });
+  expect(afterFailure({ kind: "rate", waitMs: 3_600_000 }, { busy: 5, bad: 1 })).toEqual({ waitMs: 3_600_000, tries: { busy: 5, bad: 1 }, reason: "rate" });
   // Total wait before giving up on a busy model: about 6 hours.
   const total = Array.from({ length: BUSY_TRIES }, (_, t) => backoffMs(t)).reduce((a, b) => a + b, 0);
   expect(total / 3_600_000).toBeGreaterThan(5.5);
