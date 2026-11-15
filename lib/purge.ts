@@ -1,10 +1,14 @@
 import "server-only";
 import { db } from "./db";
 import { purgeCutoff } from "./trash";
+import { pruneGraph } from "./graph-store";
 
 /** Permanently delete everything that has been in the trash for more than 30 days (run by hand: `npm run purge`). */
 export async function purgeExpired({ now = Date.now() }: { now?: number } = {}) {
   const old = { lt: purgeCutoff(now) };
+
+  // People losing memories for good: their graphs are tidied afterwards (edges cascade with the memory, nodes don't).
+  const losing = await db.personFact.findMany({ where: { deletedAt: old, person: { deletedAt: undefined } }, select: { personId: true }, distinct: ["personId"] });
 
   const [facts, threads, analyses, chats, people] = await db.$transaction([
     db.personFact.deleteMany({ where: { deletedAt: old } }),
@@ -13,6 +17,10 @@ export async function purgeExpired({ now = Date.now() }: { now?: number } = {}) 
     db.chatUpload.deleteMany({ where: { deletedAt: old } }),
     db.person.deleteMany({ where: { deletedAt: old } }), // children cascade
   ]);
+
+  // Nodes nothing stands behind any more (lib/graph.ts ungrounded); the two hubs always stay.
+  let nodes = 0;
+  for (const { personId } of losing) nodes += await pruneGraph(personId).catch(() => 0); // the person may have been purged too
 
   let users = 0;
   const failed: string[] = [];
@@ -33,5 +41,5 @@ export async function purgeExpired({ now = Date.now() }: { now?: number } = {}) 
       console.error("purge: account failed", id, (e as Error).message);
     }
   }
-  return { facts: facts.count, threads: threads.count, analyses: analyses.count, chats: chats.count, people: people.count, users, failed };
+  return { facts: facts.count, threads: threads.count, analyses: analyses.count, chats: chats.count, people: people.count, nodes, users, failed };
 }

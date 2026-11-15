@@ -1,0 +1,80 @@
+{
+  "name": "remembered-detail",
+  "about": "Three weeks after I mentioned it, she brings it back: attention.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-10-10 21:00",
+      "from": "Me",
+      "text": "one day i want to see the northern lights"
+    },
+    {
+      "at": "2026-10-10 21:01",
+      "from": "Riya",
+      "text": "nice"
+    },
+    {
+      "at": "2026-10-31 18:30",
+      "from": "Riya",
+      "text": "look what i found, a northern lights trip in february. thought of you"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "I told her I want to see the northern lights",
+      "date": "2026-10-10",
+      "triples": [
+        {
+          "from": "me",
+          "rel": "WANTS",
+          "to": "northern lights",
+          "label": ""
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "She found a northern lights trip and sent it to me",
+      "date": "2026-10-31",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DID_FOR",
+          "to": "northern lights",
+          "label": "found a trip"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f1",
+      "rel": "WANTS",
+      "line": "one day i want to see the northern lights",
+      "tone": "sincere",
+      "polarity": 2
+    },
+    {
+      "memory": "f2",
+      "rel": "DID_FOR",
+      "line": "look what i found, a northern lights trip in february. thought of you",
+      "tone": "warm",
+      "polarity": 2
+    }
+  ],
+  "ask": "Does she even listen to what I say?",
+  "expect": {
+    "edges": [
+      "the user WANTS northern lights",
+      "Riya DID_FOR northern lights"
+    ],
+    "findings": [
+      "attention"
+    ],
+    "quote": "look what i found, a northern lights trip in february. thought of you",
+    "text": "21 days after"
+  }
+}

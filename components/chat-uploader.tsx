@@ -6,6 +6,7 @@ import { gzipSync, strToU8 } from "fflate";
 import { toast } from "sonner";
 import { parseFiles, parseWhatsApp, type ParsedChat } from "@/lib/parsers";
 import { namesMatch, trimToNew } from "@/lib/merge";
+import { capText, uploadParts } from "@/lib/upload";
 import { removeChat } from "@/app/actions";
 
 type Existing = { myName: string; theirName: string; lastAt: number } | null;
@@ -18,6 +19,8 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
   const [me, setMe] = useState("");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Long chats go up in parts: which one is on its way.
+  const [part, setPart] = useState<{ at: number; of: number } | null>(null);
   const [drag, setDrag] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   // Uncontrolled: a long chat pasted on a phone shouldn't re-render the page on every change.
@@ -88,11 +91,34 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
     const messages = sameChat ? trimToNew(pair, existing.lastAt) : pair;
     if (sameChat && !messages.length) return toast.info(`Nothing new. You already have everything up to ${fmt(existing.lastAt)}.`);
     setBusy(true);
-    try {
-      const body = gzipSync(strToU8(JSON.stringify({ source: chat.source, myName: me, theirName, messages, tzOffset: new Date().getTimezoneOffset() })));
+    // Oldest first: the first part creates (or replaces) the chat, the others merge into it.
+    const parts = uploadParts(messages.map((m) => ({ ...m, text: capText(m.text) })));
+    const send = async (msgs: typeof messages) => {
+      const body = gzipSync(strToU8(JSON.stringify({ source: chat.source, myName: me, theirName, messages: msgs, tzOffset: new Date().getTimezoneOffset() })));
       const res = await fetch(`/api/people/${personId}/chat`, { method: "POST", body, headers: { "content-type": "application/octet-stream" } });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({ error: `Upload failed (${res.status})` }));
       if (!res.ok) throw new Error(json.error);
+      return json;
+    };
+    try {
+      setPart(parts.length > 1 ? { at: 1, of: parts.length } : null);
+      const json = await send(parts[0]);
+      for (let i = 1; i < parts.length; i++) {
+        setPart({ at: i + 1, of: parts.length });
+        try {
+          const r = await send(parts[i]);
+          json.msgCount = r.msgCount;
+          if (json.mode === "merged") {
+            json.added = (json.added ?? 0) + (r.added ?? 0);
+            json.to = r.to ?? json.to;
+            json.from ??= r.from;
+          }
+        } catch (e) {
+          // What is saved stays saved; sending again only adds what is missing (exact de-dupe on merge).
+          router.refresh(); // the chat as far as it got
+          throw new Error(`Saved ${i} of ${parts.length} parts, then: ${(e as Error).message || "upload failed"}. Save again to add the rest.`);
+        }
+      }
       if (json.mode !== "merged")
         toast.success(`${json.msgCount.toLocaleString()} messages with ${theirName} saved to ${personName}`, {
           duration: 12_000,
@@ -114,6 +140,7 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
       toast.error((e as Error).message || "Upload failed");
     } finally {
       setBusy(false);
+      setPart(null);
     }
   }
 
@@ -205,7 +232,7 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
             I&apos;m part of this conversation and I&apos;ll keep what I learn here private.
           </label>
           <div className="flex gap-3">
-            <button className="btn-primary" disabled={!consent || !me || busy} onClick={upload}>{busy ? "Encrypting…" : "Save chat"}</button>
+            <button className="btn-primary" disabled={!consent || !me || busy} onClick={upload}>{busy ? (part ? `Saving part ${part.at} of ${part.of}…` : "Encrypting…") : "Save chat"}</button>
             <button className="btn-ghost" onClick={() => setChat(null)}>Back</button>
           </div>
         </div>

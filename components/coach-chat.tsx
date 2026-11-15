@@ -5,12 +5,19 @@ import Link from "next/link";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { toast } from "sonner";
-import { renameThread, trashItem } from "@/app/actions";
+import { loadTrace, renameThread, trashItem } from "@/app/actions";
 import { syncModel, type ModelSync } from "@/lib/model-sync";
 import { chatHeight } from "@/lib/chat-height";
+import { REHEARSAL_BANNER } from "@/lib/ai/persona";
 import { ConfirmButton } from "./confirm-button";
 
 type Thread = { id: string; title: string; updatedAt: string };
+
+const practiceStarters = (name: string) => [
+  "hey, free this weekend?",
+  "i'm sorry about the other day",
+  `${name}, can we talk about something?`,
+];
 
 const starters = (name: string) => [
   `${name} hasn't replied since yesterday. What should I do?`,
@@ -27,9 +34,16 @@ function errorText(e: Error) {
   }
 }
 
-export function CoachChat({ personId, personName, threadId, initialMessages, threads, canChat }: {
+export function CoachChat({ personId, personName, threadId, initialMessages, threads, canChat, mode = "coach", notice, debriefOf }: {
   personId: string; personName: string; threadId: string | null; initialMessages: UIMessage[]; threads: Thread[]; canChat: boolean;
+  /** "rehearsal": the user practises with a simulation of the person (app/api/people/[id]/rehearse). */
+  mode?: "coach" | "rehearsal";
+  /** A line shown under the rehearsal banner (their style is guessed; not enough is known). */
+  notice?: string;
+  /** A rehearsal thread to debrief: a new coach conversation starts with its transcript. */
+  debriefOf?: string;
 }) {
+  const rehearsal = mode === "rehearsal";
   const [current, setCurrent] = useState(threadId);
   const [list, setList] = useState(threads);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -41,13 +55,13 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
   };
   const lastSent = useRef("");
   const [input, setInput] = useState("");
-  const base = `/people/${personId}/coach`;
+  const base = `/people/${personId}/${rehearsal ? "rehearse" : "coach"}`;
 
   // Created once; the thread id travels per message via sendMessage's body.
   const [transport] = useState(
     () =>
       new DefaultChatTransport({
-        api: `/api/people/${personId}/coach`,
+        api: `/api/people/${personId}/${rehearsal ? "rehearse" : "coach"}`,
         prepareSendMessagesRequest: ({ messages, body }) => ({ body: { ...body, message: messages.at(-1) } }),
         fetch: async (url, init) => {
           const res = await fetch(url, init);
@@ -114,20 +128,29 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages, status, profile]);
 
-  function send(text: string) {
+  function send(text: string, extra?: { debriefOf: string }) {
     const t = text.trim();
     if (!t || busy) return;
     lastSent.current = t;
     stick.current = true;
-    sendMessage({ text: t }, { body: { threadId: current } });
+    sendMessage({ text: t }, { body: { threadId: current, ...extra } });
     setInput("");
   }
+
+  // Opened from a rehearsal's "How did I do?": ask once, straight away. The ref survives a dev double-mount.
+  const debriefed = useRef(false);
+  useEffect(() => {
+    if (!debriefOf || debriefed.current || !canChat) return;
+    debriefed.current = true;
+    send("How did I do?", { debriefOf });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
+  }, []);
 
   return (
     <div ref={wrap} className="grid gap-4 lg:grid-cols-[240px_1fr] lg:gap-6">
       <aside ref={side} className="space-y-2 lg:max-h-[var(--chat-h,70dvh)] lg:overflow-y-auto lg:overscroll-contain">
         <div className="flex gap-2">
-          <Link href={base} className="btn-ghost h-9 flex-1">+ New conversation</Link>
+          <Link href={base} className="btn-ghost h-9 flex-1">{rehearsal ? "+ New practice" : "+ New conversation"}</Link>
           {list.length > 0 && (
             <button type="button" className="btn-ghost h-9 px-4 lg:hidden" aria-expanded={showThreads} aria-controls="coach-threads" onClick={() => setShowThreads((v) => !v)}>
               Conversations ({list.length})
@@ -204,6 +227,16 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
       </aside>
 
       <section ref={card} className="card flex h-[var(--chat-h,70dvh)] flex-col overflow-hidden">
+        {rehearsal && (
+          // Always on screen: not inside the scrolling list.
+          <div role="note" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-amber/40 bg-amber/10 px-5 py-2 text-xs text-amber">
+            <span className="font-semibold">{REHEARSAL_BANNER(personName)}</span>
+            {notice && <span className="text-muted">{notice}</span>}
+            {current && messages.length >= 2 && !busy && (
+              <Link href={`/people/${personId}/coach?debrief=${current}`} className="ml-auto text-heart underline-offset-4 hover:underline">How did I do?</Link>
+            )}
+          </div>
+        )}
         <div
           ref={scroller}
           className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-5 sm:p-6" aria-live="polite"
@@ -215,12 +248,14 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
           {messages.length === 0 && (
             <div className="grid h-full place-items-center py-10 text-center">
               <div>
-                <p className="display text-2xl">Talk it through.</p>
+                <p className="display text-2xl">{rehearsal ? "Try it here first." : "Talk it through."}</p>
                 <p className="mx-auto mt-2 max-w-sm text-sm text-muted">
-                  Tell me what happened with {personName}. I remember what you tell me and keep their read up to date, with or without a chat.
+                  {rehearsal
+                    ? `Type what you'd send ${personName}. The replies are a simulation built from their real messages and what is known about them. Nothing you practise here is remembered as something they said.`
+                    : `Tell me what happened with ${personName}. I remember what you tell me and keep their read up to date, with or without a chat.`}
                 </p>
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
-                  {starters(personName.split(" ")[0]).map((s) => (
+                  {(rehearsal ? practiceStarters : starters)(personName.split(" ")[0]).map((s) => (
                     <button key={s} className="chip hover:border-heart/50 hover:text-paper" disabled={!canChat} onClick={() => send(s)}>
                       {s}
                     </button>
@@ -229,8 +264,8 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
               </div>
             </div>
           )}
-          {messages.map((m) => <Message key={m.id} m={m} />)}
-          {status === "submitted" && <p className="text-sm text-dim">Thinking…</p>}
+          {messages.map((m) => <Message key={m.id} m={m} persona={rehearsal ? personName : undefined} />)}
+          {status === "submitted" && <p className="text-sm text-dim">{rehearsal ? `Simulated ${personName} is typing…` : "Thinking…"}</p>}
           {profile && profile.status !== "current" && (
             <p className="text-xs text-dim" aria-live="polite">
               {profile.status === "running" ? (
@@ -263,7 +298,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
                 send(input);
               }
             }}
-            placeholder={canChat ? `What happened with ${personName}?` : "Add an AI key in Settings to chat"}
+            placeholder={!canChat ? (notice && rehearsal ? "Not enough to practise with yet" : "Add an AI key in Settings to chat") : rehearsal ? `Say it the way you'd text ${personName}` : `What happened with ${personName}?`}
             disabled={!canChat}
             aria-label="Message"
             className="input h-auto min-h-11 flex-1 resize-none py-3"
@@ -288,11 +323,14 @@ function changedMemory(m: UIMessage) {
   });
 }
 
-function Message({ m }: { m: UIMessage }) {
+function Message({ m, persona }: { m: UIMessage; /** Set in a rehearsal: replies are a simulation of this person. */ persona?: string }) {
   const mine = m.role === "user";
+  const simulated = !!persona && !mine;
   return (
     <div className={mine ? "flex justify-end" : "flex"}>
-      <div className={`max-w-[85%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-relaxed ${mine ? "rounded-br-md bg-heart text-ink" : "rounded-bl-md bg-ink-3"}`}>
+      {/* A simulated reply never looks like the coach's: dashed amber outline and a label. */}
+      <div className={`max-w-[85%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-relaxed ${mine ? "rounded-br-md bg-heart text-ink" : simulated ? "rounded-bl-md border border-dashed border-amber/60 bg-ink-2" : "rounded-bl-md bg-ink-3"}`}>
+        {simulated && <p className="text-[10px] uppercase tracking-wide text-amber">Simulated {persona.split(" ")[0]}</p>}
         {m.parts.map((p, i) => {
           if (p.type === "text") return <p key={i} className="whitespace-pre-wrap">{p.text}</p>;
           if (p.type === "tool-remember" && p.state === "output-available") {
@@ -306,9 +344,48 @@ function Message({ m }: { m: UIMessage }) {
           if (p.type === "tool-recall" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Checking what I remember…</p>;
           if (p.type === "tool-connect" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Following how things connect…</p>;
           if (p.type === "tool-searchChat" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Looking through your chat…</p>;
+          if (p.type === "tool-quote" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Reading what was actually said…</p>;
+          if (p.type === "tool-search_history" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Looking through what we said before…</p>;
+          if (p.type === "tool-check_draft" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Checking the message…</p>;
           return null;
         })}
+        {!mine && !persona && m.parts.some((p) => p.type === "text") && <Why id={m.id} />}
       </div>
+    </div>
+  );
+}
+
+type Trace = {
+  provider?: string; model?: string; steps?: number; focus?: string[]; edges?: number; memories?: number;
+  findings?: { kind: string; isNew?: boolean }[]; tools?: { name: string; chars: number }[];
+  history?: { messages: number; summarised: boolean }; chars?: { context: number; budget: number };
+};
+
+/** What this reply was built from: loaded when opened, so nothing extra travels with every message. */
+function Why({ id }: { id: string }) {
+  const [open, setOpen] = useState(false);
+  const [trace, setTrace] = useState<Trace | null | "loading">(null);
+  const toggle = async () => {
+    setOpen((v) => !v);
+    if (trace) return;
+    setTrace("loading");
+    setTrace(((await loadTrace(id).catch(() => null)) as Trace | null) ?? {});
+  };
+  const t = trace && trace !== "loading" ? trace : null;
+  return (
+    <div className="text-xs text-dim">
+      <button type="button" className="underline-offset-4 hover:text-paper hover:underline" aria-expanded={open} onClick={toggle}>why?</button>
+      {open && (
+        trace === "loading" ? <p className="mt-1">Loading…</p> : !t?.model ? <p className="mt-1">No details were kept for this reply.</p> : (
+          <ul className="mt-1 space-y-0.5">
+            <li>About: {t.focus?.length ? t.focus.join(", ") : "nothing named in memory"}</li>
+            <li>From memory: {t.memories ?? 0} memories, {t.edges ?? 0} links{t.findings?.length ? `, findings: ${t.findings.map((f) => `${f.kind.replace("_", " ")}${f.isNew ? " (new)" : ""}`).join(", ")}` : ""}</li>
+            <li>Looked up: {t.tools?.length ? t.tools.map((x) => `${x.name.replace("_", " ")} (${x.chars} chars)`).join(", ") : "nothing more"}, in {t.steps} step{t.steps === 1 ? "" : "s"}</li>
+            <li>Conversation: {t.history?.messages ?? 0} messages{t.history?.summarised ? " plus a summary of the earlier part" : ""}</li>
+            <li>{t.provider} {t.model}; context {t.chars?.context.toLocaleString()} of {t.chars?.budget.toLocaleString()} chars</li>
+          </ul>
+        )
+      )}
     </div>
   );
 }

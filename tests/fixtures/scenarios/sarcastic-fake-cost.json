@@ -1,0 +1,77 @@
+{
+  "name": "sarcastic-fake-cost",
+  "about": "The same offer said with an eye-roll is not an act of care: no cost finding.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-11-10 20:00",
+      "from": "Me",
+      "text": "make me cheese pasta"
+    },
+    {
+      "at": "2026-11-10 20:01",
+      "from": "Riya",
+      "text": "sure i'll make you cheese 🙄 right after i learn to fly"
+    },
+    {
+      "at": "2026-11-10 20:02",
+      "from": "Me",
+      "text": "lol ok"
+    },
+    {
+      "at": "2026-11-09 10:00",
+      "from": "Riya",
+      "text": "i hate cheese you know that"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Hates cheese",
+      "date": "2026-11-09",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DISLIKES",
+          "to": "cheese",
+          "label": ""
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "Said she'd make me cheese pasta",
+      "date": "2026-11-10",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DID_FOR",
+          "to": "cheese",
+          "label": "said she'd cook"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f2",
+      "rel": "DID_FOR",
+      "line": "sure i'll make you cheese 🙄 right after i learn to fly",
+      "tone": "sarcastic",
+      "polarity": -1
+    }
+  ],
+  "ask": "She said she'd make me cheese pasta. Does that mean she's into me?",
+  "expect": {
+    "edges": [
+      "Riya DISLIKES cheese",
+      "Riya DID_FOR cheese"
+    ],
+    "findings": []
+  },
+  "not": [
+    "cost"
+  ]
+}

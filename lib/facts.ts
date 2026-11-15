@@ -71,6 +71,9 @@ export function factsFromAnalysis(a: DeepPartial<Analysis>): FactInput[] {
   return out;
 }
 
+/** Never edited by the user since it was saved. Background work only fills in memories like this: an edit is a choice that stands. */
+export const untouched = (f: { createdAt: Date; updatedAt: Date }) => f.updatedAt.getTime() - f.createdAt.getTime() < 1000;
+
 /** Drop candidates already stored (or repeated within the batch). */
 export function newFacts(existing: string[], candidates: FactInput[]): FactInput[] {
   const seen = new Set(existing.map(normalizeFact));

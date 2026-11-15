@@ -110,8 +110,13 @@ function pickSamples(mine: { text: string; opener: boolean }[]) {
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
-/** The voice as a prompt block: real samples first (the strongest signal), then the measured habits as rules. */
-export function voiceForPrompt(v: Voice) {
+/**
+ * The voice as a prompt block: real samples first (the strongest signal), then the measured habits as rules.
+ * `who`: "user" for messages drafted for the user to send (the default, and the only wording existing callers get);
+ * "them" for the other person's voice, measured with voiceProfile(msgs, theirName), when replying as them in a rehearsal.
+ */
+export function voiceForPrompt(v: Voice, who: "user" | "them" = "user") {
+  const them = who === "them";
   const habits = [
     `Length: usually about ${v.medianWords} word${v.medianWords === 1 ? "" : "s"} a message; ${pct(v.shortShare)} are 1-3 words. Stay near that.`,
     v.lowerStart >= 0.7 ? `Starts with a lowercase letter in ${pct(v.lowerStart)} of messages: do not capitalise the first word.` : v.lowerStart <= 0.3 ? `Starts with a capital in ${pct(1 - v.lowerStart)} of messages: do the same.` : `Mixes capital and lowercase starts (${pct(v.lowerStart)} lowercase).`,
@@ -125,14 +130,23 @@ export function voiceForPrompt(v: Voice) {
     v.openers.length ? `Starts conversations like: ${v.openers.map((o) => `"${o}"`).join(", ")}.` : "",
     v.words.length ? `Their own words and spellings, most used first: ${v.words.join(", ")}. When one of these fits, use it spelled exactly like this, never a tidier spelling.` : "",
     v.stretches ? "Sometimes stretches letters (heyyy, okkk)." : "Does not stretch letters.",
-    v.burst >= 1.8 ? `Often sends ${Math.round(v.burst)} short messages in a row instead of one long one: a suggestion may be 2-3 short lines (one message per line).` : "Usually sends one message at a time.",
+    v.burst >= 1.8 ? `Often sends ${Math.round(v.burst)} short messages in a row instead of one long one: ${them ? "a reply" : "a suggestion"} may be 2-3 short lines (one message per line).` : "Usually sends one message at a time.",
   ].filter(Boolean);
+  const habitList = habits.map((h) => `- ${h}`).join("\n");
+  if (them)
+    return `How they type, measured from ${v.count} of their own messages. Real messages they sent:
+<their_voice>
+${v.samples.join("\n")}
+</their_voice>
+Their habits:
+${habitList}
+Every reply you write as them must look like they typed it on their own keyboard: copy the typing in the samples (casing, punctuation, spelling, emoji, length, language mix), not their content.`;
   return `How the user types, measured from ${v.count} of their own messages. Real messages they sent:
 <user_voice>
 ${v.samples.join("\n")}
 </user_voice>
 Their habits:
-${habits.map((h) => `- ${h}`).join("\n")}
+${habitList}
 Every message you write for the user to send must look like they typed it on their own keyboard: copy the typing in the samples (casing, punctuation, spelling, emoji, length, language mix), not their content. If a message could have been written by anyone, or reads like an assistant wrote it, rewrite it.`;
 }
 

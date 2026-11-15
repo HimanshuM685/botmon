@@ -2,11 +2,12 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
-import { chatPayloadSchema, getChat, getPerson, loadChat } from "@/lib/data";
+import { chatPayloadSchema, getChat, getPerson, loadChat, MAX_CHAT_MESSAGES } from "@/lib/data";
 import { mergeChats } from "@/lib/merge";
 import { computeStats } from "@/lib/stats";
 
-const MAX_COMPRESSED = 4 * 1024 * 1024; // Vercel request body cap is 4.5MB
+// Per request. Long chats come in parts (lib/upload.ts): the first replaces, the rest merge.
+const MAX_COMPRESSED = 4 * 1024 * 1024; // Vercel request body cap is 4.5MB, Netlify's 6MB
 const MAX_RAW = 60 * 1024 * 1024;
 
 // Body: gzip(JSON chatPayload). Client parses the export; server validates, re-compresses and encrypts.
@@ -36,6 +37,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (existing && existing.myName === myName && existing.theirName === theirName) {
     const { messages, added } = mergeChats(await loadChat(existing.cipher), incoming);
     if (!added.length) return Response.json({ ok: true, mode: "merged", added: 0, msgCount: existing.msgCount });
+    if (messages.length > MAX_CHAT_MESSAGES)
+      return Response.json({ error: `This chat would pass ${MAX_CHAT_MESSAGES.toLocaleString()} messages. Export a shorter range.` }, { status: 413 });
     await db.chatUpload.update({
       where: { id: existing.id },
       data: {

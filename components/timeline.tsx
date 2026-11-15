@@ -2,10 +2,10 @@
 
 import { useActionState, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { saveFact, trashItem, type ActionState } from "@/app/actions";
+import { edgeQuote, saveFact, trashItem, type ActionState } from "@/app/actions";
 import { syncModel } from "@/lib/model-sync";
 import { ConfirmButton } from "./confirm-button";
-import { MemoryMap, type MapLink, type MapRelation } from "./memory-map";
+import { MemoryMap, type MapEdge, type MapFinding, type MapLink, type MapRelation } from "./memory-map";
 
 /** After the timeline changes, bring the read up to date in the background (no chat re-read). */
 function updateRead(personId: string) {
@@ -21,10 +21,13 @@ const SOURCE = { ANALYSIS: "from a read", COACH: "from coach", USER: "added by y
 const FELT = { "-2": "Very bad", "-1": "Bad", "0": "Neutral", "1": "Good", "2": "Very good" } as const;
 const DOT: Record<string, string> = { EVENT: "bg-heart", FACT: "bg-paper", PREFERENCE: "bg-mint", DATE: "bg-amber" };
 
-export function Timeline({ personId, personName, facts, links, relations = [], replaced = {} }: {
+export function Timeline({ personId, personName, facts, links, relations = [], edges = [], findings = [], replaced = {} }: {
   personId: string; personName: string; facts: Fact[]; links: MapLink[];
   /** Graph edges between two topics, e.g. cheese IS_A milk product. */
   relations?: MapRelation[];
+  /** Typed edges from the person or the user to a topic, and the stored findings, for the map. */
+  edges?: MapEdge[];
+  findings?: MapFinding[];
   /** memory id -> text of the older memory it corrected (that one is in the trash) */
   replaced?: Record<string, string>;
 }) {
@@ -52,7 +55,7 @@ export function Timeline({ personId, personName, facts, links, relations = [], r
         ))}
       </div>
 
-      {view === "map" && <MemoryMap name={personName} facts={facts} links={links} relations={relations} selected={entity} onSelect={setEntity} />}
+      {view === "map" && <MemoryMap name={personName} facts={facts} links={links} relations={relations} edges={edges} findings={findings} loadQuote={edgeQuote} selected={entity} onSelect={setEntity} />}
 
       {entity && (
         <p className="text-sm text-muted">

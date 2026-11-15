@@ -7,11 +7,13 @@ import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel } from "@/lib/ai/provider";
 import { seedFor, streamResponse } from "@/lib/ai/stream";
-import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact } from "@/lib/facts";
+import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact, untouched } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { scheduleGraphJob } from "@/lib/graph/job";
+import { historyFor } from "@/lib/history-store";
 
 export const maxDuration = 300;
 /** Memories last changed before this could not have had a feeling set or cleared by the user (migration memory_feeling). */
@@ -45,6 +47,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "Already up to date with this chat. Add a newer export, or run a full re-read." }, { status: 409 });
   const mode = prev ? "incremental" : "full";
 
+  // Long chats are read whole: every period before the newest stretch must be read (history route) first,
+  // so a read never silently skips months.
+  const msgs = await loadChat(chat.cipher);
+  const history = await historyFor(chat, msgs, CHAR_BUDGET[key.provider]);
+  if (!history.ready)
+    return Response.json({ error: `Read the rest of this chat's history first (${history.todo} of ${history.parts} parts left).`, code: "history_needed", todo: history.todo }, { status: 409 });
+
   // Record the attempt first, then count: concurrent requests all see each other's rows,
   // and failed or aborted runs still count toward the limit.
   const run = await db.analysis.create({
@@ -56,8 +65,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ error: "Hourly limit reached. Try again later." }, { status: 429 });
   }
 
-  const [msgs, allFacts] = await Promise.all([
-    loadChat(chat.cipher),
+  const [allFacts] = await Promise.all([
     db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, createdAt: true, updatedAt: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
@@ -67,7 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const emotion = emotionMap(facts);
   const graph = await loadGraph(person, facts);
   const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
-  const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
+  const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const stats = await getChatStats(chat);
   const voice = voiceProfile(msgs, chat.myName);
   const prompt = buildPrompt({
@@ -88,6 +96,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     graph: graphBrief,
     known,
     voice: voice ? voiceForPrompt(voice) : undefined,
+    history: history.text || undefined,
+    historyTo: history.to,
   });
   const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
 
@@ -101,6 +111,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     seed: seedFor(chat.id),
     maxRetries: 1,
   });
+
+  // Once the read is saved and sent: categories for the new things, typed edges for older memories.
+  scheduleGraphJob(userId, person);
 
   return streamResponse(result.stream, {
     label: `analyze ${key.provider} ${key.model}`,
@@ -123,14 +136,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const found = factsFromAnalysis(output);
       const fresh = newFacts(allFacts.map((f) => f.text), found);
       // Saved through the graph store: each memory's triples become nodes and edges.
-      await saveMemories(person, fresh, { source: "ANALYSIS", analysisId: run.id });
+      await saveMemories(person, fresh, { source: "ANALYSIS", analysisId: run.id }, key);
       // Connect older memories too: ones saved before tags or feelings existed get what this read gave the same fact.
       // Only never-edited memories: if the user edited one (e.g. cleared its tags), that choice stands.
       // Feelings also reach memories last changed before feelings existed: nobody could have cleared one then
       // (this covers memories an earlier tag backfill had touched).
       // One transaction = one connection, so a large timeline can't flood the pool.
       const again = new Map(found.map((f) => [normalizeFact(f.text), f]));
-      const untouched = (f: { createdAt: Date; updatedAt: Date }) => f.updatedAt.getTime() - f.createdAt.getTime() < 1000;
       const backfill = facts
         .map((f) => ({ f, now: again.get(normalizeFact(f.text)) }))
         .map(({ f, now }) => ({ f, now, tags: !!now && untouched(f) && !f.entities.length && now.entities.length > 0, felt: !!now?.feeling && !f.feeling && (untouched(f) || f.updatedAt < FEELINGS_SINCE) }))
@@ -151,7 +163,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (!now || !untouched(f) || !(now.triples?.length || gotTags.has(f.id))) return [];
         return [{ f, tags: gotTags.has(f.id) ? now.entities : f.entities, triples: now.triples }];
       }).slice(0, 200);
-      const linked = await linkMemories(person, relink.map(({ f, tags, triples }) => ({ factId: f.id, tags, triples })));
+      const { entities: linked } = await linkMemories(person, relink.map(({ f, tags, triples }) => ({ factId: f.id, tags, triples })), key);
       // The tag list cached on each memory follows the graph, as for new memories (saveMemories).
       const retag = relink.filter(({ f, tags }) => (linked.get(f.id) ?? tags).join("|") !== tags.join("|"));
       if (retag.length)

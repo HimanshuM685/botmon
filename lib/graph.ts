@@ -1,4 +1,6 @@
 import { MAX_TAGS, normalizeEntity } from "./facts";
+import { MATCH_MIN, matchNode, spellScore } from "./graph/resolve";
+import { collectTensions } from "./graph/tensions";
 
 /**
  * The memory graph: people, places and things as nodes, typed directed edges between them, each edge backed
@@ -13,20 +15,29 @@ export type Rel = (typeof RELS)[number];
 export const TRIPLE_RELS = RELS.filter((r) => r !== "MENTIONS") as Exclude<Rel, "MENTIONS">[];
 
 export type Triple = { from: string; rel: string; to: string; label?: string };
-export type GNode = { id: string; key: string; label: string; kind: string; aliases: string[] };
-export type GEdge = { id: string; fromId: string; toId: string; rel: string; label: string | null; factId: string | null };
+export type GNode = { id: string; key: string; label: string; kind: string; aliases: string[]; /** The embedding model its label was embedded with, if any. */ embedModel?: string | null };
+export type GEdge = {
+  id: string; fromId: string; toId: string; rel: string; label: string | null; factId: string | null;
+  /** Evidence, once the chat was mined for it (lib/graph/evidence.ts): when it was said, how, and by whom. */
+  at?: Date | null;
+  tone?: string | null;
+  polarity?: number | null;
+  /** A chat line is stored for this edge; the coach reads it with the quote tool. Never the line itself. */
+  quoted?: boolean;
+  quoteSender?: string | null;
+  confidence?: number;
+};
 export type GFact = { id: string; kind: string; text: string; happenedAt: Date | null; feeling?: string | null; valence?: number | null };
 
 /** The two fixed nodes every person's graph has: the person, and the user. */
 export const THEM = "them", ME = "me";
-const HUBS = new Set([THEM, ME]);
+export const HUBS = new Set([THEM, ME]);
 /** Belongs-under edges: "cheese IS_A milk product", "cheese PART_OF milk" (made from). */
-const UP = new Set<string>(["IS_A", "PART_OF"]);
+export const UP = new Set<string>(["IS_A", "PART_OF"]);
 const POSITIVE = new Set<string>(["LIKES", "WANTS"]);
 const NEGATIVE = new Set<string>(["DISLIKES", "AVOIDS", "FEARS"]);
-const VERB: Record<string, string> = { DISLIKES: "dislike", AVOIDS: "avoid", FEARS: "fear", LIKES: "like", WANTS: "want", DID_FOR: "did or offered" };
 /** A category with more children than this ("food") is too broad for its children to count as related. */
-const NARROW = 6;
+export const NARROW = 6;
 
 const isRel = (r: string): r is Rel => (RELS as readonly string[]).includes(r);
 
@@ -41,17 +52,25 @@ export function endpointKey(name: string, personName = "") {
 }
 
 /**
- * What one memory adds to the graph: the nodes to create and the edges to add. Pure, so the server store and the
- * coach's in-turn view of the graph plan the same thing.
+ * What one memory adds to the graph: the nodes to create and the edges to add. Pure, so every caller that
+ * plans from the same rows gets the same nodes and edges. A coach turn that just saved applies the store's
+ * delta instead of planning the memory a second time.
  * - a triple becomes an edge backed by the memory; IS_A / PART_OF are knowledge, not backed by a memory, added once
  * - a plain tag no triple covers becomes `them MENTIONS tag`
+ * - a name that is an existing node spelled differently (lib/graph/resolve.ts) is that node, and is returned in
+ *   `aliases` for the caller to store. Categories (what other things belong under) only match exactly.
  * Returns `entities`: the non-hub node keys this memory touches (cached on the fact for the timeline and map).
  */
 export function planMemory(
   nodes: GNode[],
   edges: GEdge[],
   item: { factId: string; tags?: string[]; triples?: Triple[] },
-  opts: { personName?: string; newId?: () => string } = {},
+  opts: {
+    personName?: string;
+    newId?: () => string;
+    /** Names that mean an existing node although they are spelled nothing alike (found by embedding): key -> node id. */
+    same?: Map<string, string>;
+  } = {},
 ) {
   const newId = opts.newId ?? (() => crypto.randomUUID());
   const byKey = new Map<string, GNode>();
@@ -60,12 +79,25 @@ export function planMemory(
     for (const a of n.aliases) if (!byKey.has(a)) byKey.set(a, n);
   }
   const addNodes: GNode[] = [], addEdges: GEdge[] = [];
-  const node = (key: string, label: string, kind = "thing") => {
+  const aliases: { nodeId: string; alias: string }[] = [];
+  /** New nodes that no spelling matched: the ones worth an embedding lookup before they are created. */
+  const fresh: GNode[] = [];
+  const categories = new Set(edges.filter((e) => UP.has(e.rel)).map((e) => e.toId));
+  const node = (key: string, label: string, kind = "thing", exact = false) => {
     let n = byKey.get(key);
+    if (!n && !exact && !HUBS.has(key)) {
+      n = matchNode(key, [...nodes, ...addNodes].filter((c) => !HUBS.has(c.key) && !categories.has(c.id))) ?? nodes.find((c) => c.id === opts.same?.get(key) && !categories.has(c.id));
+      if (n) {
+        byKey.set(key, n);
+        if (addNodes.includes(n)) n.aliases.push(key);
+        else aliases.push({ nodeId: n.id, alias: key });
+      }
+    }
     if (!n) {
       n = { id: newId(), key, label: HUBS.has(key) ? key : label.trim().slice(0, 60) || key, kind: HUBS.has(key) ? key : kind, aliases: [] };
       byKey.set(key, n);
       addNodes.push(n);
+      if (!exact && !HUBS.has(key)) fresh.push(n);
     }
     return n;
   };
@@ -80,7 +112,9 @@ export function planMemory(
     const rel = isRel(t.rel) && t.rel !== "MENTIONS" ? t.rel : "RELATED_TO";
     const up = UP.has(rel);
     if (up && (HUBS.has(fk) || HUBS.has(tk))) continue;
-    const from = node(fk, t.from), to = node(tk, t.to, rel === "KNOWS" ? "person" : "thing");
+    const from = node(fk, t.from), to = node(tk, t.to, rel === "KNOWS" ? "person" : "thing", up);
+    if (from.id === to.id) continue; // two spellings of one thing
+    if (up) categories.add(to.id);
     touch(from);
     touch(to);
     const factId = up ? null : item.factId;
@@ -95,7 +129,7 @@ export function planMemory(
     const them = node(THEM, THEM);
     if (!has(them.id, n.id, "MENTIONS", item.factId)) addEdges.push({ id: newId(), fromId: them.id, toId: n.id, rel: "MENTIONS", label: null, factId: item.factId });
   }
-  return { nodes: addNodes, edges: addEdges, entities: [...touched].slice(0, MAX_TAGS) };
+  return { nodes: addNodes, edges: addEdges, aliases, fresh, entities: [...touched].slice(0, MAX_TAGS) };
 }
 
 /**
@@ -117,7 +151,30 @@ export function ungrounded(nodes: GNode[], edges: GEdge[]): string[] {
   return nodes.filter((n) => !HUBS.has(n.key) && !grounded.has(n.id)).map((n) => n.id);
 }
 
-export type Tension = { kind: "cost" | "mixed" | "risk"; text: string };
+/**
+ * A finding. `key` is stable across requests (it names the nodes, not the wording), so findings can be stored and
+ * recognised again; `edgeIds` is the evidence; `confidence` 0..1 follows how the evidence was said.
+ */
+export type Tension = { kind: "cost" | "mixed" | "risk" | "attention" | "drift" | "open_promise"; key: string; text: string; edgeIds: string[]; confidence: number };
+
+/**
+ * Edges a newer edge has overtaken: same two nodes, one side a liking (LIKES, WANTS), the other an aversion
+ * (DISLIKES, AVOIDS, FEARS), from different memories. Returns older edge id -> the edge that replaced it.
+ * A newer liking never overtakes AVOIDS or FEARS: enjoying a milkshake once does not cancel an allergy.
+ * `order` gives each edge's place in time (its own date, else its memory's), larger is newer.
+ */
+export function superseded(edges: GEdge[], order: (e: GEdge) => number): Map<string, GEdge> {
+  const out = new Map<string, GEdge>();
+  const attitude = edges.filter((e) => POSITIVE.has(e.rel) || NEGATIVE.has(e.rel));
+  for (const a of attitude)
+    for (const b of attitude) {
+      if (a.fromId !== b.fromId || a.toId !== b.toId || a.factId === b.factId || POSITIVE.has(a.rel) === POSITIVE.has(b.rel)) continue;
+      if (order(b) <= order(a) || (POSITIVE.has(b.rel) && a.rel !== "DISLIKES")) continue;
+      const by = out.get(a.id);
+      if (!by || order(b) > order(by)) out.set(a.id, b); // the newest opposite wins
+    }
+  return out;
+}
 
 export type Graph = ReturnType<typeof buildGraph>;
 
@@ -130,7 +187,13 @@ export function buildGraph(nodes: GNode[], allEdges: GEdge[], facts: GFact[], na
   // `facts` runs oldest first (then undated, then what was saved this turn): its position is an edge's age.
   const age = new Map(facts.map((f, i) => [f.id, i]));
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const edges = allEdges.filter((e) => byId.has(e.fromId) && byId.has(e.toId) && (!e.factId || fact.has(e.factId)));
+  const live = allEdges.filter((e) => byId.has(e.fromId) && byId.has(e.toId) && (!e.factId || fact.has(e.factId)));
+  // When an edge is from: the quoted line's time, else its memory's date. Without either, the memory's place in the list.
+  const when = (e: GEdge) => e.at?.getTime() ?? (e.factId ? fact.get(e.factId)?.happenedAt?.getTime() : undefined);
+  const order = (e: GEdge) => when(e) ?? 8.64e15 + (e.factId ? age.get(e.factId) ?? 0 : 0); // undated memories come last in `facts`
+  // What a newer memory has overtaken ("used to like sushi") leaves the working graph; history() still has it.
+  const replaced = superseded(live, order);
+  const edges = live.filter((e) => !replaced.has(e.id));
   const out = new Map<string, GEdge[]>(), into = new Map<string, GEdge[]>(), aboutFact = new Map<string, Set<string>>();
   const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => void (m.get(k)?.push(v) ?? m.set(k, [v]));
   const hub = (id: string) => HUBS.has(byId.get(id)!.key);
@@ -153,16 +216,22 @@ export function buildGraph(nodes: GNode[], allEdges: GEdge[], facts: GFact[], na
     const exact = nodes.find((n) => n.key === k) ?? nodes.find((n) => n.aliases.includes(k));
     if (exact) return exact;
     const q = ` ${k} `;
-    return nodes
-      .filter((n) => !HUBS.has(n.key) && (q.includes(` ${n.key} `) || ` ${n.key} `.includes(q)))
-      .sort((a, b) => touching(b.id).length - touching(a.id).length)[0];
+    const things = nodes.filter((n) => !HUBS.has(n.key));
+    return (
+      things.filter((n) => q.includes(` ${n.key} `) || ` ${n.key} `.includes(q)).sort((a, b) => touching(b.id).length - touching(a.id).length)[0] ??
+      matchNode(k, things) // a different spelling
+    );
   }
 
-  /** Every non-hub node named in a piece of text (a user message), by key or alias, whole words only. */
+  /**
+   * Every non-hub node named in a piece of text (a user message): by key or alias as whole words, or a one-word
+   * name spelled differently ("panner" for paneer).
+   */
   function mentioned(text: string): GNode[] {
     // Not normalizeEntity: that cuts to key length, and this is a whole message.
     const t = ` ${text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
-    return nodes.filter((n) => !HUBS.has(n.key) && [n.key, ...n.aliases].some((k) => k.length > 1 && t.includes(` ${k} `)));
+    const words = [...new Set(t.trim().split(" "))].filter((w) => w.length >= 4);
+    return nodes.filter((n) => !HUBS.has(n.key) && [n.key, ...n.aliases].some((k) => k.length > 1 && (t.includes(` ${k} `) || (k.length >= 4 && !k.includes(" ") && words.some((w) => spellScore(w, k) >= MATCH_MIN)))));
   }
 
   /** What a node belongs under, nearest first: up IS_A / PART_OF, at most 3 levels. */
@@ -257,12 +326,22 @@ export function buildGraph(nodes: GNode[], allEdges: GEdge[], facts: GFact[], na
   }
 
   const day = (d: Date) => d.toISOString().slice(0, 10);
+  /** The memory behind an edge, with how it was said when the chat line is known. `[q:id]`: the quote tool has the line. */
   const evidence = (e: GEdge) => {
     const f = e.factId ? fact.get(e.factId) : undefined;
     if (!f) return "";
     const felt = f.feeling ? `, felt ${f.feeling}${f.valence ? ` ${f.valence > 0 ? "+" : ""}${f.valence}` : ""}` : "";
-    return ` [${f.happenedAt ? `${day(f.happenedAt)} ` : ""}"${f.text.slice(0, 140)}"${felt}]`;
+    const date = e.at ?? f.happenedAt;
+    return ` [${date ? `${day(date)} ` : ""}"${f.text.slice(0, 140)}"${felt}${e.tone ? `, said ${e.tone}` : ""}]${e.quoted ? ` [q:${e.id}]` : ""}`;
   };
+
+  /** What they used to feel about a node, each with the edge that replaced it, oldest first. */
+  function history(nodeId: string) {
+    return [...replaced.entries()]
+      .map(([id, by]) => ({ was: live.find((e) => e.id === id)!, now: by }))
+      .filter((h) => h.was.fromId === nodeId || h.was.toId === nodeId)
+      .sort((a, b) => order(a.was) - order(b.was));
+  }
   const renderEdge = (e: GEdge) => `${name(e.fromId)} —${e.rel}${e.label ? ` (${e.label})` : ""}→ ${name(e.toId)}${evidence(e)}`;
 
   /** How two family members hang together, in words: "cheese and milk are both kinds of milk product". */
@@ -273,64 +352,28 @@ export function buildGraph(nodes: GNode[], allEdges: GEdge[], facts: GFact[], na
     return ` (${name(x)} and ${name(y)} are both under ${shared ? name(shared) : "the same thing"})`;
   }
 
-  /**
-   * Findings that come from the shape of the graph, not from any single memory:
-   * - cost: they did or offered something involving X while they dislike, avoid or fear X or something X belongs with
-   * - mixed: they like/want X and also dislike/avoid/fear it (or its family): changed over time, or two-sided
-   * - risk: something in `focus` (what the user is talking about or planning) belongs with what they avoid or fear
-   */
-  function tensions(focus: string[] = [], max = 8, local = false): Tension[] {
-    if (!them) return [];
-    // `local`: only findings that involve the focus or what belongs with it.
-    const near = new Set(focus.flatMap((id) => [...family(id).keys()]));
-    const relevant = (...ids: string[]) => !local || ids.some((id) => near.has(id));
-    const mine = out.get(them.id) ?? [];
-    const negatives = mine.filter((e) => NEGATIVE.has(e.rel));
-    const found: Tension[] = [], seen = new Set<string>();
-    const add = (kind: Tension["kind"], key: string, text: string) => {
-      if (seen.has(key) || found.length >= max) return;
-      seen.add(key);
-      found.push({ kind, text });
-    };
-    for (const pos of mine.filter((e) => e.rel === "DID_FOR" || POSITIVE.has(e.rel))) {
-      const fam = family(pos.toId);
-      for (const neg of negatives) {
-        const how = fam.get(neg.toId);
-        if (!how || !relevant(pos.toId, neg.toId)) continue;
-        if (neg.factId === pos.factId && how === "itself" && pos.rel !== "DID_FOR") continue; // one memory saying both: not a finding
-        const cost = pos.rel === "DID_FOR";
-        // A like and a dislike for merely related things (likes cheese, dislikes milk) is not a contradiction.
-        if (!cost && how === "related") continue;
-        add(
-          cost ? "cost" : "mixed",
-          `${pos.toId}|${neg.toId}|${cost}`,
-          cost
-            ? `Effort at a cost: ${name(them.id)} ${VERB.DID_FOR} something with ${name(pos.toId)}${pos.label ? ` (${pos.label})` : ""}${evidence(pos)} although they ${VERB[neg.rel]} ${name(neg.toId)}${neg.label ? ` (${neg.label})` : ""}${evidence(neg)}${link(pos.toId, neg.toId, how)}. Doing something that costs them is usually care for the user, not a change of taste.`
-            : `Mixed or changed: ${name(them.id)} ${VERB[pos.rel]} ${name(pos.toId)}${evidence(pos)} but also ${VERB[neg.rel]} ${name(neg.toId)}${neg.label ? ` (${neg.label})` : ""}${evidence(neg)}${link(pos.toId, neg.toId, how)}. Check the dates before assuming either.`,
-        );
-      }
-    }
-    for (const id of focus) {
-      const fam = family(id);
-      for (const neg of negatives.filter((e) => e.rel !== "DISLIKES" || fam.get(e.toId) === "itself")) {
-        const how = fam.get(neg.toId);
-        if (how) add("risk", `risk|${id}|${neg.toId}`, `Careful with ${name(id)}: ${name(them.id)} ${VERB[neg.rel]} ${name(neg.toId)}${neg.label ? ` (${neg.label})` : ""}${evidence(neg)}${link(id, neg.toId, how)}.`);
-      }
-    }
-    return found;
+  /** Findings from the shape of the graph (lib/graph/tensions.ts). Only `risk` depends on `focus`. */
+  function tensions(focus: string[] = [], max = 8, local = false, now = Date.now()): Tension[] {
+    return collectTensions({
+      themId: them?.id, meId: nodes.find((n) => n.key === ME)?.id, nodes, edges, live, replaced, clock: now, name, family, touching, evidence, link, when, order, hub,
+    }, focus, local, max);
   }
 
   /** The part of the graph around some nodes, as a prompt block: their edges out to `hops`, then the tensions. */
-  function renderSubgraph(focusIds: string[], hops = 2, max = 40) {
-    const lines = newest(neighbours(focusIds, hops, 400), max).map((e) => `- ${renderEdge(e)}`);
-    const t = tensions(focusIds, 8, true).map((x) => `! ${x.text}`);
-    return [lines.length ? `Linked to what is being discussed (${focusIds.map(name).join(", ")}):\n${lines.join("\n")}` : "", t.length ? `What the links show:\n${t.join("\n")}` : ""].filter(Boolean).join("\n");
+  /** A finding as a prompt line. Ones in `fresh` (first seen since the conversation's last turn) say so and come first. */
+  const lines = (list: Tension[], fresh?: Set<string>) =>
+    [...list].sort((a, b) => Number(!!fresh?.has(b.key)) - Number(!!fresh?.has(a.key))).map((x) => `! ${fresh?.has(x.key) ? "New since we last spoke: " : ""}${x.text}`);
+
+  function renderSubgraph(focusIds: string[], hops = 2, max = 40, fresh?: Set<string>) {
+    const lines_ = newest(neighbours(focusIds, hops, 400), max).map((e) => `- ${renderEdge(e)}`);
+    const t = lines(tensions(focusIds, 8, true), fresh);
+    return [lines_.length ? `Linked to what is being discussed (${focusIds.map(name).join(", ")}):\n${lines_.join("\n")}` : "", t.length ? `What the links show:\n${t.join("\n")}` : ""].filter(Boolean).join("\n");
   }
 
   /** For prompts: the subgraph around `focusIds` when there are any, then whatever else the links show overall. */
-  function brief(focusIds: string[] = []) {
-    const local = focusIds.length ? renderSubgraph(focusIds) : "";
-    const rest = tensions([], 6).map((x) => `! ${x.text}`).filter((line) => !local.includes(line));
+  function brief(focusIds: string[] = [], fresh?: Set<string>) {
+    const local = focusIds.length ? renderSubgraph(focusIds, 2, 40, fresh) : "";
+    const rest = lines(tensions([], 6), fresh).filter((line) => !local.includes(line));
     return [local, rest.length ? `${local ? "Elsewhere in the graph" : "What the links between memories show"}:\n${rest.join("\n")}` : ""].filter(Boolean).join("\n");
   }
 
@@ -338,5 +381,5 @@ export function buildGraph(nodes: GNode[], allEdges: GEdge[], facts: GFact[], na
   const known = (max = 150) =>
     nodes.filter((n) => !HUBS.has(n.key)).sort((a, b) => touching(b.id).length - touching(a.id).length).slice(0, max).map((n) => n.label);
 
-  return { nodes, edges, resolve, mentioned, ancestors, family, neighbours, path, tensions, renderEdge, renderSubgraph, brief, known, name, newest };
+  return { nodes, edges, resolve, mentioned, ancestors, family, neighbours, path, tensions, history, renderEdge, renderSubgraph, brief, known, name, newest, supersededBy: replaced };
 }

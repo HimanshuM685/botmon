@@ -9,9 +9,13 @@ import type { Msg } from "./parsers/types";
 import type { ProviderId } from "./ai/models";
 import { computeStats, type ChatStats } from "./stats";
 import { contextHash } from "./context";
+import { capText } from "./upload";
 
 export const MAX_PEOPLE = 3;
-export const MAX_MESSAGES = 200_000;
+/** Messages per upload request: long chats go up in parts (lib/upload.ts). */
+export const MAX_MESSAGES = 50_000;
+/** Messages per stored chat, checked when a part is merged in. */
+export const MAX_CHAT_MESSAGES = 1_000_000;
 
 export const chatPayloadSchema = z.object({
   source: z.enum(["WHATSAPP", "INSTAGRAM", "PASTE"]),
@@ -19,7 +23,7 @@ export const chatPayloadSchema = z.object({
   theirName: z.string().min(1).max(200),
   tzOffset: z.number().int().min(-14 * 60).max(14 * 60),
   messages: z
-    .array(z.object({ sender: z.string().max(200), text: z.string().max(20_000), ts: z.number().int().positive() }))
+    .array(z.object({ sender: z.string().max(200), text: z.string().transform(capText), ts: z.number().int().positive() }))
     .min(1, "No messages found")
     .max(MAX_MESSAGES),
 });
@@ -59,6 +63,9 @@ export async function getActiveKey(userId: string) {
 
 /** Fingerprint of the person's notes and alive timeline right now (see lib/context.ts). */
 export async function currentContextHash(person: { id: string; notes: string | null; relation: string; gender: string }) {
-  const facts = await db.personFact.findMany({ where: { personId: person.id, ...alive }, select: { id: true, updatedAt: true } });
-  return contextHash(person, facts);
+  const [facts, findings] = await Promise.all([
+    db.personFact.findMany({ where: { personId: person.id, ...alive }, select: { id: true, updatedAt: true } }),
+    db.memoryFinding.findMany({ where: { personId: person.id, retiredAt: null }, select: { key: true } }),
+  ]);
+  return contextHash(person, facts, findings.map((f) => f.key));
 }

@@ -9,10 +9,18 @@ Upload a WhatsApp or Instagram chat with someone you care about (crush, girlfrie
 - Re-analysis is incremental: the previous read plus only new messages go to the model; "Full re-read" redoes everything
 - Detailed read: status + trend, personality with evidence, love languages, mood/triggers, interests, key facts, important dates, open threads, relationship phases, conflicts, your strengths/blind spots, next moves, messages to send
 - Coach chat per person: "this happened, what now?" answered with the chat, latest read and timeline; it can search the full chat and saves new facts to the timeline. Every message is stored.
+- The coach investigates before it answers: it reads the exact quote behind a link and cites it with its date, lists stored findings, says what used to be true, searches earlier conversations, and checks every message it drafts against what the person avoids and against how you type. Long conversations keep a running summary of their older part (nothing is deleted). A "why?" under each reply shows what it was built from
+- Memory graph per person: people, places and things linked by what they like, avoid, fear and did. Different spellings of one thing ("Paneer", "paneer cubes", "panir") resolve to one node and are kept as aliases
+- The graph fills itself in after each reply, on your own key with the provider's cheapest model: a new thing ("paneer") is asked once what it belongs under ("milk product"), and older memories get typed links. Capped per person per hour
+- Evidence on every link: the exact chat line it rests on (stored encrypted, like the chat), its date and how it was said (warm, sarcastic, reluctant…). A sarcastic offer is not read as care. A changed preference replaces the old one and keeps it as history
+- Findings from the links, stored per person: effort at a cost, a changed mind, something they remembered weeks later, warming or cooling over a month, an open promise. A new finding refreshes the read's advice by itself
+- With a Gemini, OpenAI or NVIDIA key, names are also matched by meaning ("curd" finds "dahi") using embeddings of node labels only, never chat lines. With Grok, Groq or OpenRouter the same flows run on spelling alone
+- Practise tab: rehearse a conversation with a simulation of the person, grounded in their real replies, typing, boundaries and current mood. A permanent banner says it is a simulation; nothing it says is ever saved as memory. "How did I do?" opens a coach debrief that grades your lines and suggests better ones in your voice
+- Memory map: typed links from the person to each topic, coloured by what they say and how it was said, findings flagged on the topics they rest on; click a link to read the exact line behind it
 - Timeline (long-term memory) per person: filled by reads and the coach, editable by you, used in every read and chat
 - 30-day trash for everything (people, chats, reads, coach conversations, timeline items, the account); restore any time, then erased when you run `npm run purge`
 - Analysis streams in live; history kept per person
-- Export / delete everything from Settings
+- Export / delete everything from Settings; the export includes the memory graph, and purge removes graph nodes nothing stands behind any more
 
 > Google AI Pro / Gemini app subscriptions can't be used by third-party apps (Google offers no OAuth path for that quota), so users bring an API key.
 
@@ -50,5 +58,6 @@ Trash purge: deleted items stay 30 days; nothing is erased automatically. Run `n
 
 ## Scripts
 
-- `npm test` — parser, stats and crypto tests
+- `npm test` — pure unit tests: parsers, stats, crypto, the memory graph, findings, coach tools, persona, and the ten scenario fixtures
 - `npm run lint`, `npm run build`
+- `npm run eval` — runs the scenario fixtures (`tests/fixtures/scenarios`) through a real model: extraction, categories, evidence, then the coach. Needs `EVAL_PROVIDER` and `EVAL_API_KEY` (optional `EVAL_MODEL`, `EVAL_RUNS`, `EVAL_ONLY`); skipped without them

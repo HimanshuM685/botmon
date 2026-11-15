@@ -12,11 +12,13 @@ export default async function CoachPage({ params, searchParams }: PageProps<"/pe
   const user = await requireUser();
   const person = await getPerson(user.id, (await params).id);
   if (!person) notFound();
-  const t = (await searchParams).t;
+  const { t, debrief } = await searchParams;
   const threadId = typeof t === "string" ? t : null;
+  // Arriving from a rehearsal's "How did I do?": a new conversation that starts with that practice run.
+  const debriefOf = !threadId && typeof debrief === "string" ? debrief : undefined;
 
   const [threads, keyCount] = await Promise.all([
-    db.coachThread.findMany({ where: { personId: person.id, ...alive }, orderBy: { updatedAt: "desc" }, select: { id: true, title: true, updatedAt: true } }),
+    db.coachThread.findMany({ where: { personId: person.id, mode: "coach", ...alive }, orderBy: { updatedAt: "desc" }, select: { id: true, title: true, updatedAt: true } }),
     db.apiKey.count({ where: { userId: user.id } }),
   ]);
   const active = threadId ? threads.find((x) => x.id === threadId) : undefined;
@@ -28,7 +30,8 @@ export default async function CoachPage({ params, searchParams }: PageProps<"/pe
 
   return (
     <CoachChat
-      key={active?.id ?? "new"}
+      key={active?.id ?? debriefOf ?? "new"}
+      debriefOf={debriefOf}
       personId={person.id}
       personName={person.name}
       threadId={active?.id ?? null}

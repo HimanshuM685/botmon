@@ -92,12 +92,21 @@ model Person {
   /// Living-read updates in the current hour window (cost cap)
   modelRuns      Int           @default(0)
   modelRunsSince DateTime?
+  /// Background graph work (lib/graph/job.ts): its own lock and hourly cap, same shape as the model lock
+  graphLockUntil DateTime?
+  graphRuns      Int           @default(0)
+  graphRunsSince DateTime?
+  /// The last chat message already mined for evidence
+  graphThroughAt DateTime?
+  /// Memories created up to here were already offered typed edges (triple backfill)
+  graphFactsAt   DateTime?
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   chats          ChatUpload[]
   analyses       Analysis[]
   facts          PersonFact[]
   nodes          MemoryNode[]
   edges          MemoryEdge[]
+  findings       MemoryFinding[]
   threads        CoachThread[]
 
   @@index([userId])
@@ -122,9 +131,29 @@ model ChatUpload {
   deletedAt DateTime?
   /// The chat this one pushed to the trash (new upload, moved here, restored): removing this one brings that one back.
   replacedId String?
+  /// Set while its history is being read (app/api/people/[id]/history), so only one run per chat at a time
+  historyLockUntil DateTime?
   person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+  chapters  ChatChapter[]
 
   @@index([personId])
+}
+
+/// One period of a long chat, read once (lib/history.ts). level 0: a chapter of messages; 1: an era, several
+/// chapters condensed when the whole history no longer fits a prompt. `cipher` is the result JSON, encrypted.
+model ChatChapter {
+  id        String     @id @default(cuid())
+  chatId    String
+  fromTs    DateTime
+  toTs      DateTime
+  msgCount  Int
+  level     Int        @default(0)
+  cipher    String
+  model     String
+  createdAt DateTime   @default(now())
+  chat      ChatUpload @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, level, fromTs])
 }
 
 model Analysis {
@@ -158,6 +187,8 @@ model PersonFact {
   happenedAt DateTime?
   source     FactSource
   analysisId String?
+  /// Learned from a chapter of this chat's history (not from a read): erased with the chat if it was the wrong one.
+  chatId     String?
   /// People, places, topics and events this memory is about, normalised (lib/facts.ts normalizeEntity).
   /// Memories sharing one are connected: the memory graph.
   entities   String[]     @default([])
@@ -173,6 +204,7 @@ model PersonFact {
   linksTo    MemoryLink[] @relation("to")
   edges      MemoryEdge[]
 
+  @@index([chatId])
   @@index([personId, deletedAt])
 }
 
@@ -201,6 +233,12 @@ model MemoryNode {
   /// "them" | "me" | "person" | "thing"
   kind      String       @default("thing")
   aliases   String[]     @default([])
+  /// Embedding of the label (lib/graph/vectors.ts), read and written with raw SQL, and the model it came from.
+  /// Only compared with vectors of the same model. Absent with providers that can't embed: everything works without.
+  embedding  Unsupported("vector")?
+  embedModel String?
+  /// Set once the node was asked what it belongs under (lib/graph/categories.ts), so it is asked once
+  categorizedAt DateTime?
   createdAt DateTime     @default(now())
   person    Person       @relation(fields: [personId], references: [id], onDelete: Cascade)
   edgesOut  MemoryEdge[] @relation("edgeFrom")
@@ -220,6 +258,22 @@ model MemoryEdge {
   rel       String
   label     String?
   factId    String?
+  /// When it was said or true (the quoted line's time)
+  at        DateTime?
+  /// warm | sincere | playful | teasing | reluctant | sarcastic | cold | annoyed (lib/graph/evidence.ts TONES)
+  tone      String?
+  /// -2..2, same scale as PersonFact.valence
+  polarity  Int?
+  /// encrypt() of the exact chat line this edge rests on. Decrypted only server-side, inside tools and the export.
+  quoteCipher String?
+  /// To find the line again: its timestamp (ms) and who sent it, "them" or "me"
+  quoteTs     BigInt?
+  quoteSender String?
+  /// A newer edge on the same pair that says the opposite (lib/graph.ts superseded)
+  supersededById String?
+  confidence Float      @default(1)
+  /// Set once the chat was searched for this edge's line, found or not
+  minedAt   DateTime?
   createdAt DateTime    @default(now())
   person    Person      @relation(fields: [personId], references: [id], onDelete: Cascade)
   from      MemoryNode  @relation("edgeFrom", fields: [fromId], references: [id], onDelete: Cascade)
@@ -232,10 +286,40 @@ model MemoryEdge {
   @@index([factId])
 }
 
+/// A finding from the shape of the graph (lib/graph.ts tensions), stored so it can be referred back to.
+/// `key` names what it is about, not how it is worded, so the same finding is recognised again. Retired when its
+/// evidence is gone, revived if it returns. Text is built from memories, never from raw chat lines.
+model MemoryFinding {
+  id          String    @id @default(cuid())
+  personId    String
+  /// cost | mixed | attention | drift | open_promise
+  kind        String
+  key         String
+  text        String
+  edgeIds     String[]  @default([])
+  confidence  Float     @default(1)
+  firstSeenAt DateTime  @default(now())
+  /// When it last changed (wording, evidence or confidence)
+  lastSeenAt  DateTime  @default(now())
+  retiredAt   DateTime?
+  person      Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([personId, key])
+}
+
 model CoachThread {
   id        String         @id @default(cuid())
   personId  String
   title     String
+  /// "coach" | "rehearsal" (practising with a simulation of the person; never read as memory)
+  mode      String         @default("coach")
+  /// The older part of a long conversation, summarised (lib/ai/compact.ts), and the last message it covers
+  summary   String?
+  summaryThroughId String?
+  /// Set on a coach thread that debriefs a rehearsal. Simulated lines are loaded from that thread and never saved as facts.
+  debriefOfId String?
+  debriefOf   CoachThread?  @relation("ThreadDebrief", fields: [debriefOfId], references: [id], onDelete: SetNull)
+  debriefs    CoachThread[] @relation("ThreadDebrief")
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
   deletedAt DateTime?
@@ -252,6 +336,8 @@ model CoachMessage {
   role      String
   parts     Json
   metadata  Json?
+  /// What a coach reply was built from: focus, findings, tools and their result sizes, budget, model (the "why?" toggle)
+  trace     Json?
   createdAt DateTime    @default(now())
   thread    CoachThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 

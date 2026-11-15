@@ -1,0 +1,73 @@
+{
+  "name": "seafood-date",
+  "about": "A seafood date plan when she is allergic to shellfish: the risk is found through the category.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-08-01 12:00",
+      "from": "Riya",
+      "text": "i'm allergic to shellfish, last time i ended up in the ER"
+    },
+    {
+      "at": "2026-08-01 12:01",
+      "from": "Me",
+      "text": "that's scary"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Allergic to shellfish, once ended up in the ER",
+      "date": "2026-08-01",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "AVOIDS",
+          "to": "shellfish",
+          "label": "allergic"
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "A new seafood place opened that does prawns",
+      "tags": [
+        "prawns"
+      ],
+      "triples": []
+    }
+  ],
+  "categories": [
+    {
+      "name": "prawns",
+      "parents": [
+        "shellfish",
+        "food"
+      ],
+      "sameAs": ""
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f1",
+      "rel": "AVOIDS",
+      "line": "i'm allergic to shellfish, last time i ended up in the ER",
+      "tone": "sincere",
+      "polarity": -2
+    }
+  ],
+  "focus": "thinking of taking her for prawns on saturday",
+  "ask": "I'm thinking of taking her to the new place for prawns on Saturday. Draft me a text to ask her.",
+  "expect": {
+    "edges": [
+      "prawns IS_A shellfish",
+      "Riya AVOIDS shellfish"
+    ],
+    "findings": [
+      "risk"
+    ],
+    "quote": "i'm allergic to shellfish, last time i ended up in the ER"
+  }
+}

@@ -8,6 +8,7 @@ import type { DeepPartial } from "ai";
 import { toast } from "sonner";
 import { analysisSchema, modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
 import { loadRead, trashItem } from "@/app/actions";
+import { PROVIDERS, type ProviderId } from "@/lib/ai/models";
 import { ConfirmButton } from "./confirm-button";
 
 /** `result` comes with the newest read only; older ones are fetched when picked. */
@@ -138,7 +139,55 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [advice.stale, advice.key, canSync, isLoading]);
 
-  function run(mode: "auto" | "full") {
+  // Long chats: every earlier period is read once (history route) before a read, so nothing old is skipped.
+  const [reading, setReading] = useState<{ done: number; total: number; next?: string | null; wait?: boolean } | null>(null);
+  const [ask, setAsk] = useState<{ mode: "auto" | "full"; todo: number; chars: number; provider: ProviderId } | null>(null);
+  const stopReading = useRef(false);
+  const historyUrl = `/api/people/${personId}/history`;
+
+  async function readHistory(total: number, todo: number) {
+    stopReading.current = false;
+    setReading({ done: total - todo, total });
+    try {
+      while (!stopReading.current) {
+        const res = await fetch(historyUrl, { method: "POST" });
+        const j = await res.json().catch(() => ({ error: "Couldn't read this part. Try again." }));
+        if (!res.ok) {
+          toast.error(j.error ?? "Couldn't read this part. Try again.");
+          return false;
+        }
+        if (j.gone) {
+          router.refresh();
+          return false;
+        }
+        if (j.retryAfter) {
+          // Rate limit or another tab reading: what is read is saved; wait, then carry on.
+          setReading((r) => r && { ...r, wait: true });
+          for (let s = 0; s < j.retryAfter && !stopReading.current; s++) await new Promise((ok) => setTimeout(ok, 1000));
+          setReading((r) => r && { ...r, wait: false });
+          continue;
+        }
+        setReading({ done: j.total - j.todo, total: j.total, next: j.next });
+        if (!j.todo) return true;
+      }
+      toast.info("Stopped. Everything read so far is kept; it carries on from there next time.");
+      return false;
+    } finally {
+      setReading(null);
+    }
+  }
+
+  async function run(mode: "auto" | "full", confirmed = false) {
+    setAsk(null);
+    if (hasChat) {
+      const s = await fetch(historyUrl).then((r) => r.json()).catch(() => null);
+      if (s?.error) return toast.error(s.error);
+      if (s?.todo > 0) {
+        // A long first run: say what it costs before spending the user's quota.
+        if (s.todo > 3 && s.todo === s.total && !confirmed) return setAsk({ mode, todo: s.todo, chars: s.chars, provider: s.provider });
+        if (!(await readHistory(s.total, s.todo))) return;
+      }
+    }
     adv.stop();
     adv.clear();
     pickSeq.current++;
@@ -161,7 +210,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
     <section className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="display mr-auto text-3xl">The read</h2>
-        {!isLoading && !waitingForRefresh && latest && (
+        {!isLoading && !reading && !waitingForRefresh && latest && (
           <details className="relative">
             <summary className="btn-ghost cursor-pointer list-none [&::-webkit-details-marker]:hidden">More</summary>
             <div className="absolute right-0 z-20 mt-2 w-64 rounded-2xl border border-line bg-ink-2 p-2 shadow-2xl">
@@ -173,7 +222,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
                   </select>
                 </label>
               )}
-              {state !== "none" && <button className={menuItem} disabled={!canRun} onClick={() => run("full")}>Re-read the whole chat</button>}
+              {state !== "none" && <button className={menuItem} disabled={!canRun} onClick={() => void run("full")}>Re-read the whole chat</button>}
               <ConfirmButton
                 className={`${menuItem} text-heart`}
                 action={() => trashItem("analysis", selected ?? latest.id)}
@@ -190,12 +239,14 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
             </div>
           </details>
         )}
-        {isLoading ? (
+        {reading ? (
+          <button className="btn-ghost" onClick={() => (stopReading.current = true)}>Stop</button>
+        ) : isLoading ? (
           <button className="btn-ghost" onClick={stop}>Stop</button>
         ) : (
           <>
             {hasChat ? (
-              <button className="btn-primary" disabled={!canRun || state === "current"} onClick={() => run("auto")}>
+              <button className="btn-primary" disabled={!canRun || state === "current"} onClick={() => void run("auto")}>
                 {state === "update" ? "Update with new messages" : state === "current" ? "Up to date" : "Analyze chat"}
               </button>
             ) : (
@@ -205,7 +256,32 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
         )}
       </div>
 
-      {!shown && !isLoading && (
+      {ask && (
+        <div className="card space-y-4 p-6 sm:p-8">
+          <p className="display text-2xl">This chat is long.</p>
+          <p className="text-sm leading-relaxed text-muted">
+            To read all of it, nothing skipped, it&apos;s read in {ask.todo} parts, oldest first. That&apos;s about{" "}
+            {Math.round(ask.chars / 4 / 100_000) / 10}M tokens on your {PROVIDERS[ask.provider]?.label ?? ask.provider} key, once: each part is kept, and later reads only add what&apos;s new.
+          </p>
+          <div className="flex gap-3">
+            <button className="btn-primary" onClick={() => run(ask.mode, true)}>Read all of it</button>
+            <button className="btn-ghost" onClick={() => setAsk(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {reading && (
+        <div className="card space-y-3 p-6 sm:p-8" aria-live="polite">
+          <p className="text-sm">
+            Reading your history: <strong>{reading.done} of {reading.total}</strong> parts
+            {reading.wait ? <span className="text-amber"> · waiting for your AI provider&apos;s rate limit</span> : reading.next ? <span className="text-muted"> · {reading.next}</span> : null}
+          </p>
+          <div className="h-1.5 rounded-full bg-ink-3" role="progressbar" aria-valuemin={0} aria-valuemax={reading.total} aria-valuenow={reading.done}>
+            <div className="h-full rounded-full bg-mint transition-[width] duration-500" style={{ width: `${(reading.done / Math.max(1, reading.total)) * 100}%` }} />
+          </div>
+          <p className="text-xs text-dim">Each part is saved as it&apos;s read. You can stop or leave, and it carries on from there. The read starts when it&apos;s done.</p>
+        </div>
+      )}
+      {!shown && !isLoading && !reading && !ask && (
         <div className="card grid place-items-center px-6 py-16 text-center text-muted">
           {building ? (
             <span className="animate-pulse text-mint" aria-busy>Building the read from what you&apos;ve told the coach…</span>

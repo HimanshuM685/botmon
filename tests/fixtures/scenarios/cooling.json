@@ -1,0 +1,122 @@
+{
+  "name": "cooling",
+  "about": "Her own lines about me were warm two months ago and are flat now: drift.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-09-01 22:00",
+      "from": "Riya",
+      "text": "i love talking to you"
+    },
+    {
+      "at": "2026-09-12 22:00",
+      "from": "Riya",
+      "text": "you always make my day better"
+    },
+    {
+      "at": "2026-10-28 22:00",
+      "from": "Riya",
+      "text": "busy. talk later"
+    },
+    {
+      "at": "2026-11-10 22:00",
+      "from": "Riya",
+      "text": "can you stop texting so much"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Said she loves talking to me",
+      "date": "2026-09-01",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "RELATED_TO",
+          "to": "me",
+          "label": "loves talking to me"
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "Said I make her day better",
+      "date": "2026-09-12",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "RELATED_TO",
+          "to": "me",
+          "label": "makes her day better"
+        }
+      ]
+    },
+    {
+      "id": "f3",
+      "text": "Was short with me, said she's busy",
+      "date": "2026-10-28",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "RELATED_TO",
+          "to": "me",
+          "label": "short, busy"
+        }
+      ]
+    },
+    {
+      "id": "f4",
+      "text": "Asked me to stop texting so much",
+      "date": "2026-11-10",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "RELATED_TO",
+          "to": "me",
+          "label": "asked for space"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f1",
+      "rel": "RELATED_TO",
+      "line": "i love talking to you",
+      "tone": "warm",
+      "polarity": 2
+    },
+    {
+      "memory": "f2",
+      "rel": "RELATED_TO",
+      "line": "you always make my day better",
+      "tone": "warm",
+      "polarity": 2
+    },
+    {
+      "memory": "f3",
+      "rel": "RELATED_TO",
+      "line": "busy. talk later",
+      "tone": "cold",
+      "polarity": -1
+    },
+    {
+      "memory": "f4",
+      "rel": "RELATED_TO",
+      "line": "can you stop texting so much",
+      "tone": "annoyed",
+      "polarity": -2
+    }
+  ],
+  "ask": "Is it me or has she gone cold lately?",
+  "expect": {
+    "edges": [],
+    "findings": [
+      "drift"
+    ],
+    "quote": "can you stop texting so much",
+    "text": "Cooling about the user"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "name": "changed-preference",
+  "about": "She loved sushi, then stopped after food poisoning: the old edge is superseded, with the date.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-01-10 19:00",
+      "from": "Riya",
+      "text": "sushi is my favourite thing in the world"
+    },
+    {
+      "at": "2026-06-02 08:00",
+      "from": "Riya",
+      "text": "never again. food poisoning from that sushi place, can't even look at it now"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Loves sushi",
+      "date": "2026-01-10",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "LIKES",
+          "to": "sushi",
+          "label": ""
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "Got food poisoning and can't stand sushi any more",
+      "date": "2026-06-02",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DISLIKES",
+          "to": "sushi",
+          "label": "after food poisoning"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f2",
+      "rel": "DISLIKES",
+      "line": "never again. food poisoning from that sushi place, can't even look at it now",
+      "tone": "annoyed",
+      "polarity": -2
+    }
+  ],
+  "ask": "Should I book the sushi place she used to love for her birthday?",
+  "expect": {
+    "edges": [
+      "Riya DISLIKES sushi"
+    ],
+    "findings": [
+      "mixed"
+    ],
+    "quote": "never again. food poisoning from that sushi place, can't even look at it now",
+    "text": "Changed on 2026-06-02",
+    "history": [
+      "sushi"
+    ]
+  },
+  "notEdges": [
+    "Riya LIKES sushi"
+  ]
+}
