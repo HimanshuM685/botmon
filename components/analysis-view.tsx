@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useObject } from "@ai-sdk/react";
 import type { DeepPartial } from "ai";
 import { toast } from "sonner";
-import { analysisSchema, modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
+import { modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
 import { loadRead, stopRead, trashItem } from "@/app/actions";
 import { PROVIDERS, type ProviderId } from "@/lib/ai/models";
 import { signalGrowth, SIGNAL_LABEL, type Goal, type SignalKey } from "@/lib/goals";
@@ -16,14 +16,6 @@ import { ConfirmButton } from "./confirm-button";
 type Saved = { id: string; createdAt: string; model: string; mode: string; result?: Analysis };
 /** "none": no read yet; "update": new messages since the last read; "current": nothing new; "changed": chat replaced since. */
 export type ReadState = "none" | "update" | "current" | "changed";
-
-function errorText(e: Error) {
-  try {
-    return JSON.parse(e.message).error as string;
-  } catch {
-    return e.message || "Analysis failed";
-  }
-}
 
 type AdviceStatus = { state: "idle" | "updating" | "failed"; at?: string; refresh: () => void };
 
@@ -40,7 +32,7 @@ function overlay(saved: DeepPartial<Analysis> | undefined, patch: DeepPartial<Mo
 export type ChatNumber = { label: string; value: string; hint: string };
 const menuItem = "block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-ink-3 disabled:opacity-50";
 
-export function AnalysisView({ personId, history, hasChat, readingInBackground = false, canRun, canSync, state, advice, chatNumbers, compareWith, goals = [] }: {
+export function AnalysisView({ personId, history, hasChat, readingInBackground = false, readFailed = null, canRun, canSync, state, advice, chatNumbers, compareWith, goals = [] }: {
   /** An earlier read to measure the scores' growth against (lib/goals.ts pickBaseline), as ISO date + scores. */
   compareWith?: { at: string; signals: Analysis["signals"] | null };
   /** Scores the user is working on ("Improve this"), dates as ISO strings. */
@@ -51,6 +43,8 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
   hasChat: boolean;
   /** A long read is running on the server (lib/read/job.ts): show its progress. */
   readingInBackground?: boolean;
+  /** Why the last background read stopped, if it did. */
+  readFailed?: string | null;
   history: Saved[];
   /** A chat and an AI key: reads of the chat can run. */
   canRun: boolean;
@@ -80,42 +74,63 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
     }
     setSelected(id);
   }
-  // Newest history id when the current run started; the live object is shown until a newer one arrives via refresh.
-  const [baseline, setBaseline] = useState<string | undefined | null>(null);
-  // The read went to the background (long chat, or the provider's rate limit): nothing to stream here.
-  const wentBackground = useRef(false);
-  const { object, submit, isLoading, stop, clear } = useObject({
-    api: `/api/people/${personId}/analyze`,
-    schema: analysisSchema,
-    fetch: async (input, init) => {
-      const res = await fetch(input, init);
-      wentBackground.current = res.status === 202;
-      if (wentBackground.current) {
-        setBaseline(null);
-        follow();
-        return new Response("{}");
+  // Every read runs on the server (lib/read/job.ts): long chats part by part, overloaded models and rate limits
+  // retried with waits. It goes on when this page is closed; here it is only followed.
+  type Reading = { done: number; total: number; nextAt: string | null; tries: number; rateLimited: boolean };
+  const idle: Reading = { done: 0, total: 0, nextAt: null, tries: 0, rateLimited: false };
+  const [reading, setReading] = useState<Reading | null>(readingInBackground ? idle : null);
+  const [failed, setFailed] = useState<string | null>(readFailed);
+  const [ask, setAsk] = useState<{ mode: "auto" | "full"; todo: number; chars: number; provider: ProviderId } | null>(null);
+  const historyUrl = `/api/people/${personId}/history`;
+  const following = !!reading;
+
+  useEffect(() => {
+    if (!following) return;
+    let live = true;
+    async function poll() {
+      const s = await fetch(`${historyUrl}?job=1`).then((r) => r.json()).catch(() => null);
+      if (!live || !s || s.error) return;
+      if (s.job) {
+        // Only a wait worth mentioning: a step that's simply due now isn't one.
+        const nextAt = s.job.nextAt && new Date(s.job.nextAt).getTime() > Date.now() + 5_000 ? s.job.nextAt : null;
+        return setReading({ done: s.job.done ?? 0, total: s.job.parts ?? 0, nextAt, tries: s.job.tries, rateLimited: !!nextAt && !s.job.tries });
       }
-      const n = Number(res.headers.get("x-read-messages") ?? 0);
-      if (res.ok && res.headers.get("x-read-mode") === "incremental")
-        toast.info(`Updating your last read with ${n.toLocaleString()} new message${n === 1 ? "" : "s"} only.`);
-      return res;
-    },
-    onError: (e) => {
-      toast.error(errorText(e));
-      clear();
-    },
-    onFinish: ({ error }) => {
-      if (wentBackground.current) {
-        clear();
-        return;
-      }
-      if (error) {
-        toast.error("The model returned an incomplete answer. Try again or switch model in Settings.");
-        clear();
-        setBaseline(null);
-      } else router.refresh();
-    },
-  });
+      setReading(null);
+      setFailed(s.failed);
+      router.refresh(); // the read is saved (or the job stopped: the page shows why)
+    }
+    void poll();
+    const t = setInterval(poll, 5_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [following, historyUrl]);
+
+  async function stopBackground() {
+    await stopRead(personId).catch(() => null);
+    setReading(null);
+    toast.info("Stopped. Everything read so far is kept; it carries on from there next time.");
+  }
+
+  async function run(mode: "auto" | "full", confirmed = false) {
+    setAsk(null);
+    setFailed(null);
+    if (hasChat && !confirmed) {
+      const s = await fetch(historyUrl).then((r) => r.json()).catch(() => null);
+      if (s?.error) return toast.error(s.error);
+      // A long first run: say what it costs before spending the user's quota.
+      if (s?.todo > 3 && s.todo === s.total) return setAsk({ mode, todo: s.todo, chars: s.chars, provider: s.provider });
+    }
+    const res = await fetch(`/api/people/${personId}/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode }) }).catch(() => null);
+    if (!res?.ok) return toast.error((await res?.json().catch(() => null))?.error ?? "Couldn't start the read. Try again.");
+    adv.stop();
+    adv.clear();
+    pickSeq.current++;
+    setSelected(null);
+    setReading(idle);
+  }
 
   // Live advice: rewritten on its own when notes, the timeline or the date change. No chat re-read.
   const [adviceFailed, setAdviceFailed] = useState(false);
@@ -152,72 +167,16 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
   // Start by itself, once per context change.
   const triedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!advice.stale || !canSync || isLoading || triedFor.current === advice.key) return;
+    if (!advice.stale || !canSync || reading || triedFor.current === advice.key) return;
     triedFor.current = advice.key;
     refreshAdvice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [advice.stale, advice.key, canSync, isLoading]);
-
-  // Long chats: every earlier period is read once before a read, so nothing old is skipped. That runs on the server
-  // (lib/read/job.ts), so it goes on when this page is closed; here it is only followed.
-  const [reading, setReading] = useState<{ done: number; total: number; nextAt?: string | null } | null>(readingInBackground ? { done: 0, total: 0 } : null);
-  const [ask, setAsk] = useState<{ mode: "auto" | "full"; todo: number; chars: number; provider: ProviderId } | null>(null);
-  const historyUrl = `/api/people/${personId}/history`;
-  const follow = () => setReading((r) => r ?? { done: 0, total: 0 });
-  const following = !!reading;
-
-  useEffect(() => {
-    if (!following) return;
-    let live = true;
-    async function poll() {
-      const s = await fetch(historyUrl).then((r) => r.json()).catch(() => null);
-      if (!live || !s || s.error) return;
-      // Only a wait worth mentioning: a step that's simply due now isn't one.
-      const waitUntil = s.job?.nextAt && new Date(s.job.nextAt).getTime() > Date.now() + 5_000 ? s.job.nextAt : null;
-      if (s.job) return setReading({ done: s.total - s.todo, total: s.total, nextAt: waitUntil });
-      setReading(null);
-      if (s.failed) toast.error(s.failed);
-      router.refresh(); // the read is saved
-    }
-    void poll();
-    const t = setInterval(poll, 15_000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [following, historyUrl]);
-
-  async function stopBackground() {
-    await stopRead(personId).catch(() => null);
-    setReading(null);
-    toast.info("Stopped. Everything read so far is kept; it carries on from there next time.");
-  }
-
-  async function run(mode: "auto" | "full", confirmed = false) {
-    setAsk(null);
-    if (hasChat) {
-      const s = await fetch(historyUrl).then((r) => r.json()).catch(() => null);
-      if (s?.error) return toast.error(s.error);
-      if (s?.todo > 0) {
-        // A long first run: say what it costs before spending the user's quota.
-        if (s.todo > 3 && s.todo === s.total && !confirmed) return setAsk({ mode, todo: s.todo, chars: s.chars, provider: s.provider });
-      }
-    }
-    adv.stop();
-    adv.clear();
-    pickSeq.current++;
-    setSelected(null);
-    setBaseline(history[0]?.id);
-    submit({ mode });
-  }
+  }, [advice.stale, advice.key, canSync, reading]);
 
   const latest = history[0];
-  const waitingForRefresh = object && baseline !== null && latest?.id === baseline;
-  const viewingLatest = !selected && !isLoading && !waitingForRefresh;
+  const viewingLatest = !selected && !reading;
   const saved = selected ? older[selected] : latest?.result;
-  const shown: DeepPartial<Analysis> | undefined =
-    isLoading || waitingForRefresh ? object : viewingLatest && adv.object ? overlay(saved, adv.object) : saved;
+  const shown: DeepPartial<Analysis> | undefined = viewingLatest && adv.object ? overlay(saved, adv.object) : saved;
   const adviceStatus: AdviceStatus | undefined = viewingLatest && latest
     ? { state: adv.isLoading ? "updating" : adviceFailed && advice.stale ? "failed" : "idle", at: advice.at, refresh: refreshAdvice }
     : undefined;
@@ -226,7 +185,7 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
     <section className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="display mr-auto text-3xl">The read</h2>
-        {!isLoading && !reading && !waitingForRefresh && latest && (
+        {!reading && latest && (
           <details className="relative">
             <summary className="btn-ghost cursor-pointer list-none [&::-webkit-details-marker]:hidden">More</summary>
             <div className="absolute right-0 z-20 mt-2 w-64 rounded-2xl border border-line bg-ink-2 p-2 shadow-2xl">
@@ -257,8 +216,6 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
         )}
         {reading ? (
           <button className="btn-ghost" onClick={() => void stopBackground()}>Stop</button>
-        ) : isLoading ? (
-          <button className="btn-ghost" onClick={stop}>Stop</button>
         ) : (
           <>
             {hasChat ? (
@@ -288,23 +245,37 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
       {reading && (
         <div className="card space-y-3 p-6 sm:p-8" aria-live="polite">
           <p className="text-sm">
-            {reading.total ? <>Reading your history: <strong>{reading.done} of {reading.total}</strong> parts</> : "Reading your chat"}
+            {reading.total ? <>Reading your chat: <strong>{reading.done} of {reading.total}</strong> parts</> : <span className="animate-pulse">Reading your chat…</span>}
             {reading.nextAt && (
-              <span className="text-amber"> · waiting for your AI provider&apos;s rate limit, carries on around {new Date(reading.nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+              <span className="text-amber">
+                {" · "}{reading.rateLimited ? "waiting for your AI provider's rate limit" : `your AI model is busy, trying again (attempt ${reading.tries + 1})`}, around{" "}
+                {new Date(reading.nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+              </span>
             )}
           </p>
-          <div className="h-1.5 rounded-full bg-ink-3" role="progressbar" aria-valuemin={0} aria-valuemax={reading.total} aria-valuenow={reading.done}>
-            <div className="h-full rounded-full bg-mint transition-[width] duration-500" style={{ width: `${(reading.done / Math.max(1, reading.total)) * 100}%` }} />
-          </div>
-          <p className="text-xs text-dim">This takes a while on a long chat, longer on free keys. You can close this window: it keeps reading in the background, and the read shows up here when it&apos;s done.</p>
+          {reading.total > 0 && (
+            <div className="h-1.5 rounded-full bg-ink-3" role="progressbar" aria-valuemin={0} aria-valuemax={reading.total} aria-valuenow={reading.done}>
+              <div className="h-full rounded-full bg-mint transition-[width] duration-500" style={{ width: `${(reading.done / Math.max(1, reading.total)) * 100}%` }} />
+            </div>
+          )}
+          <p className="text-xs text-dim">
+            Usually a minute; a long chat or a busy free model can take much longer. You can close this window: it keeps going in the background,
+            retries by itself if the model is busy, and the read shows up here when it&apos;s done.
+          </p>
         </div>
       )}
-      {!shown && !isLoading && !reading && !ask && (
+      {failed && !reading && (
+        <div className="card space-y-3 border-heart/40 p-6 sm:p-8" role="alert">
+          <p className="text-sm text-heart">The read stopped: {failed}</p>
+          <button className="btn-ghost" disabled={!canRun} onClick={() => void run("auto")}>Try again</button>
+        </div>
+      )}
+      {!shown && !reading && !ask && !failed && (
         <div className="card grid place-items-center px-6 py-16 text-center text-muted">
           {building ? (
             <span className="animate-pulse text-mint" aria-busy>Building the read from what you&apos;ve told the coach…</span>
           ) : canRun ? (
-            "Hit analyze. It takes 20–60 seconds depending on chat size."
+            "Hit analyze. It runs in the background and shows up here when it's done."
           ) : hasChat ? (
             "Add an AI key in Settings to run a read."
           ) : (
@@ -316,9 +287,8 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
         </div>
       )}
       {/* No read yet: the chat's own numbers need no AI, so they show straight away. */}
-      {!shown && !isLoading && !!chatNumbers?.length && <div className="card p-6 sm:p-8"><Numbers items={chatNumbers} /></div>}
-      {isLoading && !object?.status && <div className="card h-48 animate-pulse" aria-busy />}
-      {shown && <Report a={shown} live={isLoading} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} progress={selected ? undefined : { baseline: compareWith, goals }} />}
+      {!shown && !!chatNumbers?.length && <div className="card p-6 sm:p-8"><Numbers items={chatNumbers} /></div>}
+      {shown && <Report a={shown} live={false} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} progress={selected ? undefined : { baseline: compareWith, goals }} />}
     </section>
   );
 }

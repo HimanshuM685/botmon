@@ -60,6 +60,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         state={readState}
         hasChat={!!chat}
         readingInBackground={!!chat?.readMode}
+        readFailed={chat?.readMode ? null : chat?.readError ?? null}
         canRun={!!chat && keyCount > 0}
         canSync={keyCount > 0}
         advice={{ stale: last ? adviceStale(last, context) : !chat && enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}

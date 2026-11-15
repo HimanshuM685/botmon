@@ -169,6 +169,11 @@ model ChatUpload {
   readNextAt  DateTime?
   /// Why the last background read stopped
   readError   String?
+  /// Failed steps in a row (overloaded model, unreadable answer): sets the backoff and when to give up (lib/ai/limits.ts)
+  readTries   Int        @default(0)
+  /// Progress of the background read, kept by the job so the page can poll without decrypting the chat
+  readParts     Int?
+  readPartsDone Int?
   /// encrypt() of { me, them }: both sides' typing voices (lib/voice.ts voiceProfile), measured at upload.
   /// null on chats uploaded before voices were stored; filled lazily by getVoices (lib/data.ts)
   voiceCipher String?

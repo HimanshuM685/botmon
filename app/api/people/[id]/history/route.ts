@@ -1,6 +1,6 @@
 import { getUserId } from "@/lib/auth/server";
 import { getActiveKey, getChat, getPerson } from "@/lib/data";
-import { readStatus, resumeIfStalled } from "@/lib/read/job";
+import { jobStatus, readStatus, resumeIfStalled } from "@/lib/read/job";
 
 /**
  * Where the current chat's history and background read stand: parts in all, parts still to read, the size of what
@@ -15,5 +15,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
   if (!chat) return Response.json({ error: "Upload a chat first" }, { status: 400 });
   resumeIfStalled(new URL(req.url).origin, chat);
+  // ?job=1: the page following a read, every few seconds; the job keeps its progress on the row, so no decrypting.
+  if (new URL(req.url).searchParams.has("job")) return Response.json(jobStatus(chat));
   return Response.json(await readStatus(chat, key));
 }
