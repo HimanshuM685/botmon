@@ -93,3 +93,24 @@ it("recall and correct see memories saved earlier in the same turn", async () =>
   expect(await run(tools.correct, { old: "Trip to Goa on the 14th", replacement: "Trip to Goa moved to the 21st", kind: "EVENT", happenedAt: "2026-12-21" })).toMatchObject({ updated: true });
   expect(retired).toEqual(["f1"]);
 });
+
+it("recall walks the graph: by feeling, then one tag away; context carries the emotion map", async () => {
+  const fact = (id: string, text: string, entities: string[], feeling: string | null = null, valence: number | null = null) => ({ id, text, entities, feeling, valence, kind: "EVENT", happenedAt: null });
+  const saved: { feeling: string | null; valence: number | null }[] = [];
+  const tools = coachTools({
+    msgs: [], tz: 0, knownFacts: [],
+    facts: [fact("a", "Fight about the trip", ["goa trip"], "hurt", -2), fact("b", "Booked flights", ["goa trip", "money"]), fact("c", "Saving for a bike", ["money"]), fact("d", "Loves sushi", ["food"])],
+    saveFact: async (f) => void saved.push({ feeling: f.feeling, valence: f.valence }),
+  });
+  const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
+  const out = String(await run(tools.recall, { about: "hurt" }));
+  expect(out).toContain("Fight about the trip {about: goa trip; felt: hurt -2}");
+  expect(out).toContain("Connected to these:\n- [event] Booked flights");
+  expect(out).not.toContain("bike"); // two steps away
+  expect(out).not.toContain("sushi");
+  await run(tools.remember, { kind: "EVENT", text: "Cried after the call", happenedAt: "", about: [], feeling: "Sad", valence: -5 });
+  await run(tools.remember, { kind: "FACT", text: "Has a cat", happenedAt: "", about: [], feeling: "", valence: 2 });
+  expect(saved).toEqual([{ feeling: "sad", valence: -2 }, { feeling: null, valence: null }]);
+  const ctx = buildCoachContext({ personName: "Riya", relation: "FRIEND", gender: "FEMALE", notes: null, chat: null, read: null, facts: [], emotion: "- job: leans bad", budget: 1000 });
+  expect(ctx).toContain("<emotion_map>\n- job: leans bad\n</emotion_map>");
+});

@@ -8,6 +8,7 @@ import { adviceStale } from "@/lib/context";
 import { enoughMemory } from "@/lib/model";
 import { activityWindows } from "@/lib/stats";
 import { ChatUploader } from "@/components/chat-uploader";
+import { ChatActions } from "@/components/chat-actions";
 import { AnalysisView, type ReadState } from "@/components/analysis-view";
 import type { Analysis } from "@/lib/ai/schema";
 
@@ -16,16 +17,19 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   const person = await getPerson(user.id, (await params).id);
   if (!person) notFound();
 
-  const [chat, analyses, keyCount, context, factCount] = await Promise.all([
+  const reads = { where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" } } as const;
+  const [chat, last, analyses, others, keyCount, context, factCount] = await Promise.all([
     db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
-    db.analysis.findMany({ where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, take: 10 }),
+    // Only the latest read travels in full; older ones load when picked (loadRead in app/actions.ts).
+    db.analysis.findFirst(reads),
+    db.analysis.findMany({ ...reads, take: 10, select: { id: true, createdAt: true, model: true, mode: true } }),
+    db.person.findMany({ where: { userId: user.id, ...alive, NOT: { id: person.id } }, select: { id: true, name: true }, orderBy: { createdAt: "asc" } }),
     db.apiKey.count({ where: { userId: user.id } }),
     currentContextHash(person),
     db.personFact.count({ where: { personId: person.id, ...alive } }),
   ]);
   const stats = chat ? await getChatStats(chat) : null;
   const recent = stats ? activityWindows(stats) : null;
-  const last = analyses[0];
   const readState: ReadState = !last || !chat
     ? "none"
     : last.chatId !== chat.id || !last.throughAt
@@ -40,9 +44,10 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted">
-              {chat.source === "INSTAGRAM" ? "Instagram" : "WhatsApp"} chat · {chat.msgCount.toLocaleString()} messages ·{" "}
+              {chat.source === "INSTAGRAM" ? "Instagram" : "WhatsApp"} chat with <strong className="text-paper">{chat.theirName}</strong> · {chat.msgCount.toLocaleString()} messages ·{" "}
               {chat.firstAt.toLocaleDateString()} – {chat.lastAt.toLocaleDateString()}
             </p>
+            <ChatActions chatId={chat.id} chatWith={chat.theirName} personName={person.name} others={others} />
             <ChatUploader personId={person.id} personName={person.name} existing={{ myName: chat.myName, theirName: chat.theirName, lastAt: chat.lastAt.getTime() }} />
           </div>
           <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-3xl border border-line bg-line sm:grid-cols-4">
@@ -68,7 +73,7 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         canRun={!!chat && keyCount > 0}
         canSync={keyCount > 0}
         advice={{ stale: last ? adviceStale(last, context) : !chat && enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}
-        history={analyses.map((a) => ({ id: a.id, createdAt: a.createdAt.toISOString(), model: a.model, mode: a.mode, result: a.result as Analysis }))}
+        history={analyses.map((a) => ({ ...a, createdAt: a.createdAt.toISOString(), result: a.id === last?.id ? (last.result as Analysis) : undefined }))}
       />
     </div>
   );

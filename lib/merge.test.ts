@@ -27,3 +27,12 @@ it("trim keeps one day of overlap before the stored end", () => {
   const last = day(10, "x").ts;
   expect(trimToNew([day(8, "w"), day(9, "y"), day(10, "x"), day(11, "z")], last).map((m) => m.text)).toEqual(["y", "x", "z"]);
 });
+
+it("namesMatch: shared word matches, different person doesn't, phone numbers pass", async () => {
+  const { namesMatch } = await import("./merge");
+  expect(namesMatch("Mansi", "mansi office 🌸")).toBe(true);
+  expect(namesMatch("Mansi Sharma", "Sharma ji")).toBe(true);
+  expect(namesMatch("Mansi", "Riya")).toBe(false);
+  expect(namesMatch("Mansi", "Man")).toBe(false);
+  expect(namesMatch("Mansi", "+91 98765 43210")).toBe(true);
+});

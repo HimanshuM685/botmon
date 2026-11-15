@@ -1,5 +1,6 @@
 import "server-only";
 import { gunzipSync } from "node:zlib";
+import { cache } from "react";
 import { z } from "zod";
 import { db } from "./db";
 import { alive } from "./trash";
@@ -24,9 +25,9 @@ export const chatPayloadSchema = z.object({
 });
 
 /** Owner-scoped person lookup. Null for other users' ids, people in the trash, and accounts pending deletion. */
-export function getPerson(userId: string, personId: string) {
-  return db.person.findFirst({ where: { id: personId, userId, ...alive, user: alive } });
-}
+export const getPerson = cache((userId: string, personId: string) =>
+  db.person.findFirst({ where: { id: personId, userId, ...alive, user: alive } }),
+); // cache: the person layout and its page ask for the same row in one request
 
 /** The person's current chat (not in the trash). */
 export function getChat(personId: string) {

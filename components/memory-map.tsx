@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 
-export type MapFact = { id: string; kind: string; text: string; entities: string[] };
+export type MapFact = { id: string; kind: string; text: string; entities: string[]; feeling?: string | null; valence?: number | null };
 export type MapLink = { fromId: string; toId: string; kind: string };
 
 const W = 720, H = 460, CX = W / 2, CY = H / 2;
@@ -66,8 +66,10 @@ export function MemoryMap({ name, facts, links, selected, onSelect }: {
           return a && b ? <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="var(--amber)" strokeOpacity={0.7}><title>{l.kind}</title></line> : null;
         })}
         {nodes.map((n) => (
-          <circle key={n.fact.id} cx={n.x} cy={n.y} r={5} fill={FILL[n.fact.kind] ?? "var(--paper)"} opacity={dim(n.fact.entities)}>
-            <title>{n.fact.text}</title>
+          <circle key={n.fact.id} cx={n.x} cy={n.y} r={5} fill={FILL[n.fact.kind] ?? "var(--paper)"} opacity={dim(n.fact.entities)}
+            // A ring shows how it landed for them: mint good, amber bad.
+            stroke={n.fact.valence ? (n.fact.valence > 0 ? "var(--mint)" : "var(--amber)") : undefined} strokeWidth={2} paintOrder="stroke">
+            <title>{n.fact.feeling ? `${n.fact.text} (felt ${n.fact.feeling})` : n.fact.text}</title>
           </circle>
         ))}
         <circle cx={CX} cy={CY} r={30} fill="var(--heart)" />
@@ -86,7 +88,7 @@ export function MemoryMap({ name, facts, links, selected, onSelect }: {
         ))}
       </svg>
       <p className="px-4 pb-3 text-xs text-dim">
-        Each ring is a person, place or topic; dots are memories. Click a ring to see its memories below.
+        Each ring is a person, place or topic; dots are memories, outlined green where it felt good for them and amber where it felt bad. Click a ring to see its memories below.
         {loose > 0 && ` ${loose} ${loose === 1 ? "memory isn't" : "memories aren't"} connected to anything yet.`}
       </p>
     </div>

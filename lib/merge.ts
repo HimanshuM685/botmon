@@ -24,6 +24,17 @@ export function mergeChats(existing: Msg[], incoming: Msg[]): { messages: Msg[];
   return { messages: [...existing, ...added].sort((a, b) => a.ts - b.ts), added };
 }
 
+/**
+ * Could this chat contact be the person the page is for? True when they share a word ("Mansi" ~ "mansi office 🌸").
+ * Contacts with no letters (unsaved phone numbers) can't be judged, so they pass.
+ */
+export function namesMatch(personName: string, chatName: string): boolean {
+  const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1);
+  if (!/\p{L}/u.test(chatName)) return true;
+  const chat = new Set(words(chatName));
+  return words(personName).some((w) => chat.has(w));
+}
+
 /** Client-side: only send what can be new. Already have Nov 1–10 and drop Nov 1–13? Send Nov 9–13. */
 export function trimToNew(incoming: Msg[], storedLastAt: number): Msg[] {
   return incoming.filter((m) => m.ts >= storedLastAt - OVERLAP_MS);

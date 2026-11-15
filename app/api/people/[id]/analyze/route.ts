@@ -7,7 +7,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel } from "@/lib/ai/provider";
 import { seedFor, streamResponse } from "@/lib/ai/stream";
-import { FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact } from "@/lib/facts";
+import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
@@ -55,7 +55,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const [msgs, allFacts] = await Promise.all([
     loadChat(chat.cipher),
-    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, createdAt: true, updatedAt: true } }),
+    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, createdAt: true, updatedAt: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
   // Everything shares one budget: timeline (capped), previous read, then as much chat as still fits.
@@ -78,6 +78,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     previous: prev ? { result: prev.result as unknown as Analysis, throughAt: prev.throughAt!.getTime() } : undefined,
     anchor: !prev && prior ? (prior.result as unknown as Analysis) : undefined,
     facts: memory.facts,
+    emotion: emotionMap(facts),
     voice: voice ? voiceForPrompt(voice) : undefined,
   });
   const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
@@ -111,14 +112,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const fresh = newFacts(allFacts.map((f) => f.text), found);
       if (fresh.length)
         await db.personFact.createMany({ data: fresh.map((f) => ({ ...f, personId: person.id, source: "ANALYSIS" as const, analysisId: run.id })) });
-      // Connect older memories too: ones saved before tags existed get the tags this read gave the same fact.
+      // Connect older memories too: ones saved before tags or feelings existed get what this read gave the same fact.
       // Only never-edited memories: if the user edited one (e.g. cleared its tags), that choice stands.
       // One transaction = one connection, so a large timeline can't flood the pool.
-      const tags = new Map(found.filter((f) => f.entities.length).map((f) => [normalizeFact(f.text), f.entities]));
+      const again = new Map(found.map((f) => [normalizeFact(f.text), f]));
       const untouched = (f: { createdAt: Date; updatedAt: Date }) => f.updatedAt.getTime() - f.createdAt.getTime() < 1000;
-      const backfill = facts.filter((f) => !f.entities.length && untouched(f) && tags.has(normalizeFact(f.text))).slice(0, 200);
+      const backfill = facts
+        .map((f) => ({ f, now: again.get(normalizeFact(f.text)) }))
+        .filter(({ f, now }) => now && untouched(f) && ((!f.entities.length && now.entities.length) || (!f.feeling && now.feeling)))
+        .slice(0, 200);
       if (backfill.length)
-        await db.$transaction(backfill.map((f) => db.personFact.update({ where: { id: f.id }, data: { entities: tags.get(normalizeFact(f.text))! } })));
+        await db.$transaction(backfill.map(({ f, now }) => db.personFact.update({
+          where: { id: f.id },
+          data: { entities: f.entities.length ? f.entities : now!.entities, feeling: f.feeling ?? now!.feeling, valence: f.feeling ? f.valence : now!.valence },
+        })));
       // Fingerprint after the new facts land, so the read's own facts don't make its advice look stale.
       const contextHash = await currentContextHash(person);
       await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash, adviceAt: new Date() } });

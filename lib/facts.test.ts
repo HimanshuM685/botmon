@@ -55,3 +55,46 @@ it("toDate accepts a date with a time and rejects vague dates", async () => {
   expect(toDate("March")).toBeNull();
   expect(toDate("")).toBeNull();
 });
+
+it("feelings: cleaned, valence only kept next to one, carried from a read", async () => {
+  const { toFeeling, toValence } = await import("./facts");
+  expect(toFeeling("  Really  Hurt ")).toBe("really hurt");
+  expect(toFeeling("")).toBeNull();
+  expect(toValence(-7, "hurt")).toBe(-2);
+  expect(toValence("1", "glad")).toBe(1);
+  expect(toValence(undefined, "glad")).toBe(0);
+  expect(toValence(2, null)).toBeNull();
+  const [a, b, d] = factsFromAnalysis({
+    keyFacts: [{ fact: "Lost her job", category: "work", when: "", about: ["job"], feeling: "Crushed", valence: -2 }, { fact: "Has a cat", category: "other", when: "", valence: 1 }],
+    importantDates: [{ date: "2026-12-04", what: "Birthday", about: ["Birthday"] }],
+  });
+  expect(a).toMatchObject({ feeling: "crushed", valence: -2 });
+  expect(b).toMatchObject({ feeling: null, valence: null });
+  expect(d.entities).toEqual(["birthday"]);
+  expect(factsForPrompt([a])).toBe("- [fact] Lost her job {about: job; felt: crushed -2}");
+});
+
+it("emotionMap sums feelings per topic and lists dated ones in order", async () => {
+  const { emotionMap } = await import("./facts");
+  const f = (text: string, entities: string[], feeling: string | null, valence: number | null, date?: string) => ({ kind: "EVENT", text, entities, feeling, valence, happenedAt: date ? new Date(date) : null });
+  const map = emotionMap([
+    f("Got promoted", ["job"], "proud", 2, "2026-11-09"),
+    f("Boss shouted at her", ["job"], "stressed", -2, "2026-10-01"),
+    f("Worked all weekend", ["job"], "stressed", -1),
+    f("Dinner with sister", ["sister riya"], "happy", 1), // one felt memory: not a pattern yet
+    f("Likes tea", ["tea"], null, null),
+  ]);
+  expect(map).toContain("- job: leans bad (stressed x2, proud)");
+  expect(map).not.toContain("sister riya");
+  expect(map.indexOf("2026-10-01 stressed -2: Boss shouted")).toBeLessThan(map.indexOf("2026-11-09 proud +2: Got promoted"));
+  expect(emotionMap([f("Likes tea", ["tea"], null, null)])).toBe("");
+});
+
+it("over budget, memories one tag away from the focus beat unrelated ones", () => {
+  const facts = [
+    { kind: "FACT", text: "old: riya lives in pune padded padded", happenedAt: null, entities: ["sister riya"] },
+    { kind: "FACT", text: "riya is getting married padded padded", happenedAt: null, entities: ["sister riya", "wedding"] },
+    ...Array.from({ length: 20 }, (_, i) => ({ kind: "FACT", text: `unrelated fact number ${i} padded pad`, happenedAt: null, entities: ["misc"] })),
+  ];
+  expect(within(facts, 180, ["wedding"]).facts.map((f) => f.text)).toEqual([facts[0].text, facts[1].text]);
+});

@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { toast } from "sonner";
 import { renameThread, trashItem } from "@/app/actions";
 import { syncModel, type ModelSync } from "@/lib/model-sync";
+import { chatHeight } from "@/lib/chat-height";
 import { ConfirmButton } from "./confirm-button";
 
 type Thread = { id: string; title: string; updatedAt: string };
@@ -78,19 +79,60 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
 
   const busy = status === "submitted" || status === "streaming";
 
+  // The card is sized to the screen so only the message list scrolls, never the page.
+  const wrap = useRef<HTMLDivElement>(null);
+  const side = useRef<HTMLElement>(null);
+  const card = useRef<HTMLElement>(null);
+  const [showThreads, setShowThreads] = useState(false);
+  useEffect(() => {
+    const fit = () => {
+      if (!wrap.current || !card.current) return;
+      // visualViewport shrinks when a phone keyboard opens, keeping the message box on screen.
+      const viewport = window.visualViewport?.height ?? window.innerHeight;
+      wrap.current.style.setProperty("--chat-h", `${chatHeight(viewport, card.current.getBoundingClientRect().top + window.scrollY)}px`);
+    };
+    fit();
+    // On phones the conversation list sits above the card and moves it when it opens or grows.
+    const ro = new ResizeObserver(fit);
+    if (side.current) ro.observe(side.current);
+    window.addEventListener("resize", fit);
+    window.visualViewport?.addEventListener("resize", fit);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", fit);
+      window.visualViewport?.removeEventListener("resize", fit);
+    };
+  }, []);
+
+  // Follow new messages, unless the user scrolled up to read older ones.
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [messages, status, profile]);
+
   function send(text: string) {
     const t = text.trim();
     if (!t || busy) return;
     lastSent.current = t;
+    stick.current = true;
     sendMessage({ text: t }, { body: { threadId: current } });
     setInput("");
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
-      <aside className="space-y-2">
-        <Link href={base} className="btn-ghost h-9 w-full">+ New conversation</Link>
-        <ul className="space-y-1">
+    <div ref={wrap} className="grid gap-4 lg:grid-cols-[240px_1fr] lg:gap-6">
+      <aside ref={side} className="space-y-2 lg:max-h-[var(--chat-h,70dvh)] lg:overflow-y-auto lg:overscroll-contain">
+        <div className="flex gap-2">
+          <Link href={base} className="btn-ghost h-9 flex-1">+ New conversation</Link>
+          {list.length > 0 && (
+            <button type="button" className="btn-ghost h-9 px-4 lg:hidden" aria-expanded={showThreads} aria-controls="coach-threads" onClick={() => setShowThreads((v) => !v)}>
+              Conversations ({list.length})
+            </button>
+          )}
+        </div>
+        <ul id="coach-threads" className={`space-y-1 lg:block ${showThreads ? "" : "hidden"}`}>
           {list.map((t) => (
             <li key={t.id} className="group flex items-center gap-1">
               {renaming === t.id ? (
@@ -159,8 +201,15 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
         </ul>
       </aside>
 
-      <section className="card flex min-h-[60vh] flex-col">
-        <div className="flex-1 space-y-4 overflow-y-auto p-5 sm:p-6" aria-live="polite">
+      <section ref={card} className="card flex h-[var(--chat-h,70dvh)] flex-col overflow-hidden">
+        <div
+          ref={scroller}
+          className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-5 sm:p-6" aria-live="polite"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          }}
+        >
           {messages.length === 0 && (
             <div className="grid h-full place-items-center py-10 text-center">
               <div>

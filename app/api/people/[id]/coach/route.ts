@@ -17,7 +17,7 @@ import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
-import { entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
+import { emotionMap, entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { buildCoachContext, COACH_HISTORY, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
 import type { RelationId } from "@/lib/ai/prompt";
 import { voiceForPrompt, voiceProfile } from "@/lib/voice";
@@ -64,7 +64,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     db.coachMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: COACH_HISTORY }),
     getChat(person.id),
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
-    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true } }),
+    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
   // One budget for the whole context: timeline (capped), latest read, conversation, then recent chat.
@@ -72,7 +72,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // If memory is over budget, keep what is connected to the people and topics the user just mentioned.
   const focus = entitiesIn(message.parts.map((p) => p.text).join(" "), facts.flatMap((f) => f.entities));
   const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE), focus);
-  const used = memory.chars + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
+  const emotion = emotionMap(facts);
+  const used = memory.chars + emotion.length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
   const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
@@ -107,6 +108,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     chat: chat ? { myName: chat.myName, theirName: chat.theirName, tzOffset: chat.tzOffset, stats: await getChatStats(chat), msgs } : null,
     read: read?.result ?? null,
     facts: memory.facts,
+    emotion,
     budget: chatBudget,
     voice: voice ? voiceForPrompt(voice) : undefined,
   });

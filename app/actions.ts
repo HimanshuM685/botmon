@@ -1,7 +1,7 @@
 "use server";
 
 import { generateText } from "ai";
-import { toEntities } from "@/lib/facts";
+import { toEntities, toFeeling, toValence } from "@/lib/facts";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -13,6 +13,7 @@ import { alive } from "@/lib/trash";
 import { PROVIDER_IDS, type ProviderId } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { RELATIONS } from "@/lib/ai/prompt";
+import type { Analysis } from "@/lib/ai/schema";
 
 export type ActionState = { error?: string; ok?: boolean } | undefined;
 
@@ -192,6 +193,57 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
   return { ok: true };
 }
 
+/* ---------- Wrong chat: remove it or move it to the right person ---------- */
+
+type OwnedChat = { id: string; personId: string; createdAt: Date };
+
+function ownedChat(userId: string, chatId: string): Promise<OwnedChat | null> {
+  return db.chatUpload.findFirst({ where: { id: chatId, ...alive, person: { userId, ...alive } }, select: { id: true, personId: true, createdAt: true } });
+}
+
+/** Undo what a chat left on its person: trash the reads made from it and the memories they extracted, and bring back the chat it replaced. */
+async function detachChat(chat: OwnedChat, now: Date) {
+  const reads = (await db.analysis.findMany({ where: { chatId: chat.id, ...alive }, select: { id: true } })).map((r) => r.id);
+  return [
+    db.analysis.updateMany({ where: { id: { in: reads } }, data: { deletedAt: now } }),
+    db.personFact.updateMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads }, deletedAt: null }, data: { deletedAt: now } }),
+    // The replaced chat was trashed at exactly this chat's createdAt (app/api/people/[id]/chat). Older uploads have no match.
+    db.chatUpload.updateMany({ where: { personId: chat.personId, deletedAt: chat.createdAt }, data: { deletedAt: null } }),
+  ];
+}
+
+export async function removeChat(chatId: string): Promise<ActionState> {
+  const user = await requireUser();
+  const chat = await ownedChat(user.id, chatId);
+  if (!chat) return { error: "Not found" };
+  const now = new Date();
+  await db.$transaction([db.chatUpload.update({ where: { id: chat.id }, data: { deletedAt: now } }), ...(await detachChat(chat, now))]);
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+export async function moveChat(chatId: string, toPersonId: string): Promise<ActionState> {
+  const user = await requireUser();
+  const [chat, to] = await Promise.all([ownedChat(user.id, chatId), getPerson(user.id, toPersonId)]);
+  if (!chat || !to || to.id === chat.personId) return { error: "Not found" };
+  const now = new Date();
+  await db.$transaction([
+    ...(await detachChat(chat, now)),
+    db.chatUpload.updateMany({ where: { personId: to.id, deletedAt: null }, data: { deletedAt: now } }),
+    // createdAt = now: it is the newest chat on the new person, and removing it there brings back the one it replaced.
+    db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, createdAt: now } }),
+  ]);
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+/** An older read, loaded when picked from the history dropdown (the page only ships the latest in full). */
+export async function loadRead(id: string): Promise<Analysis | null> {
+  const user = await requireUser();
+  const r = await db.analysis.findFirst({ where: { id, ...alive, person: { userId: user.id, ...alive } }, select: { result: true } });
+  return (r?.result ?? null) as Analysis | null;
+}
+
 /* ---------- Timeline facts ---------- */
 
 const factSchema = z.object({
@@ -200,7 +252,10 @@ const factSchema = z.object({
   happenedAt: z.string().optional().transform((s) => (s ? new Date(s) : null)).refine((d) => !d || !Number.isNaN(d.getTime()), "Invalid date"),
   // Comma-separated tags ("sister, wedding"): what connects this memory to others.
   entities: z.string().max(300).optional().transform((s) => toEntities((s ?? "").split(","))),
-});
+  // How they felt about it, and how good or bad it was for them (-2..2): the emotion graph.
+  feeling: z.string().max(60).optional().transform(toFeeling),
+  valence: z.string().max(3).optional(),
+}).transform((d) => ({ ...d, valence: toValence(d.valence, d.feeling) }));
 
 export async function saveFact(_: ActionState, form: FormData): Promise<ActionState> {
   const user = await requireUser();

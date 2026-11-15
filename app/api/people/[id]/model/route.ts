@@ -9,7 +9,7 @@ import { buildMemoryReadPrompt, buildModelPatchPrompt, SYSTEM, type RelationId }
 import { getModel } from "@/lib/ai/provider";
 import { seedFor, streamResponse } from "@/lib/ai/stream";
 import { CHAR_BUDGET } from "@/lib/ai/models";
-import { FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
+import { emotionMap, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { adviceStale, contextHash } from "@/lib/context";
 import { applyPatch, changedSince, enoughMemory } from "@/lib/model";
 import { computeScore } from "@/lib/stats";
@@ -40,7 +40,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     db.personFact.findMany({
       where: { personId: person.id, deletedAt: undefined }, // trashed ones too: "no longer true" is information
       orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }],
-      select: { id: true, kind: true, text: true, happenedAt: true, updatedAt: true, deletedAt: true, entities: true },
+      select: { id: true, kind: true, text: true, happenedAt: true, updatedAt: true, deletedAt: true, entities: true, feeling: true, valence: true },
     }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
@@ -70,6 +70,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     stats: chat ? await getChatStats(chat) : null,
     tzOffsetMin: chat?.tzOffset ?? 0,
     facts: factsWithinBudget(facts, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE), added.flatMap((f) => f.entities)).facts,
+    emotion: emotionMap(facts),
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,

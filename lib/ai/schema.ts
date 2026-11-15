@@ -74,10 +74,12 @@ export const analysisSchema = z.object({
         category: z.enum(["family", "friends", "work", "study", "health", "preference", "plan", "event", "other"]),
         when: z.string().describe("Date or period if known (YYYY-MM-DD preferred), else empty string"),
         about: z.array(z.string()).describe("1-4 short tags for who or what this is about, reused across facts so related ones connect: e.g. 'sister riya', 'job', 'mumbai trip', 'sushi'. Not the person themself."),
+        feeling: z.string().describe("How THEY felt about this, one or two plain words (e.g. 'hurt', 'excited', 'stressed', 'proud'), only if the chat shows it. Else empty string."),
+        valence: z.number().describe("How good or bad it was for them: -2 very bad, -1 bad, 0 neutral or unknown, 1 good, 2 very good"),
       }),
     )
     .describe("Every concrete detail worth remembering about them. Be exhaustive; this becomes long-term memory."),
-  importantDates: z.array(z.object({ date: z.string().describe("YYYY-MM-DD or MM-DD"), what: z.string() })).describe("Birthdays, exams, trips, anniversaries, deadlines"),
+  importantDates: z.array(z.object({ date: z.string().describe("YYYY-MM-DD or MM-DD"), what: z.string(), about: z.array(z.string()).describe("1-3 tags, same style as keyFacts.about") })).describe("Birthdays, exams, trips, anniversaries, deadlines"),
   openThreads: z.array(z.string()).describe("Unresolved things: unanswered questions, promises made, plans not yet confirmed"),
   timeline: z.array(z.object({ period: z.string(), phase: z.string(), summary: z.string() })).describe("Phases of the relationship so far, oldest first"),
   conflicts: z

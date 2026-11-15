@@ -30,7 +30,7 @@ export default async function TimelinePage({ params }: PageProps<"/people/[id]/t
       personName={person.name}
       links={links.filter((l) => !l.to.deletedAt).map(({ fromId, toId, kind }) => ({ fromId, toId, kind }))}
       replaced={replaced}
-      facts={facts.map((f) => ({ id: f.id, kind: f.kind, text: f.text, source: f.source, entities: f.entities, happenedAt: f.happenedAt?.toISOString().slice(0, 10) ?? null, createdAt: f.createdAt.toISOString() }))}
+      facts={facts.map((f) => ({ id: f.id, kind: f.kind, text: f.text, source: f.source, entities: f.entities, feeling: f.feeling, valence: f.valence, happenedAt: f.happenedAt?.toISOString().slice(0, 10) ?? null, createdAt: f.createdAt.toISOString() }))}
     />
   );
 }

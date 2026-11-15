@@ -38,6 +38,37 @@ describe("whatsapp", () => {
   });
 });
 
+describe("whatsapp copied messages (no year)", () => {
+  const now = new Date(2026, 10, 15, 12).getTime();
+  const at = (ts: number) => { const d = new Date(ts); return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours()]; };
+
+  it("parses a block copied inside WhatsApp, multi-line included", () => {
+    const c = parseWhatsApp("[14/11, 9:41 pm] Riya: hey\nyou there\n[14/11, 9:45 pm] Aman: ok", now);
+    expect(c.messages.map((m) => [m.sender, m.text])).toEqual([["Riya", "hey\nyou there"], ["Aman", "ok"]]);
+    expect(at(c.messages[0].ts)).toEqual([2026, 11, 14, 21]);
+  });
+
+  it("detects month-first, and puts a December message pasted in January in last year", () => {
+    expect(at(parseWhatsApp("[11/14, 9:41 PM] Riya: hey", now).messages[0].ts)).toEqual([2026, 11, 14, 21]);
+    expect(at(parseWhatsApp("[31/12, 11:50 pm] Riya: hny", new Date(2027, 0, 2).getTime()).messages[0].ts)).toEqual([2026, 12, 31, 23]);
+  });
+
+  it("with every day 12 or lower, picks the order that ends within the last month", () => {
+    expect(at(parseWhatsApp("[5/11, 9:00 am] Riya: a\n[6/11, 9:00 am] Aman: b", now).messages[1].ts)).toEqual([2026, 11, 6, 9]);
+    expect(at(parseWhatsApp("[11/5, 9:00 AM] Riya: a\n[11/6, 9:00 AM] Aman: b", now).messages[1].ts)).toEqual([2026, 11, 6, 9]);
+    // An old export where both orders run forward and neither ends recently: DD/MM stays.
+    expect(at(parseWhatsApp("01/02/2024, 10:00 - A: x\n01/03/2024, 10:00 - B: y", now).messages[0].ts)).toEqual([2024, 2, 1, 10]);
+    // 3 Feb then 1 Mar as DD/MM runs forward; as MM/DD (Mar 2, then Jan 3) it jumps back.
+    expect(at(parseWhatsApp("02/03/2024, 10:00 - A: x\n03/01/2024, 10:00 - B: y", now).messages[0].ts)).toEqual([2024, 2, 3, 10]);
+  });
+
+  it("a year-less date without brackets inside a message stays text", () => {
+    const c = parseWhatsApp("[14/11, 9:41 pm] Riya: when?\n12/5, 10:00 - works for me", now);
+    expect(c.messages).toHaveLength(1);
+    expect(c.messages[0].text).toBe("when?\n12/5, 10:00 - works for me");
+  });
+});
+
 describe("instagram", () => {
   it("fixes mojibake, sorts ascending, merges files", () => {
     const enc = (s: string) => String.fromCharCode(...new TextEncoder().encode(s));

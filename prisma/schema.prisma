@@ -156,6 +156,10 @@ model PersonFact {
   /// People, places, topics and events this memory is about, normalised (lib/facts.ts normalizeEntity).
   /// Memories sharing one are connected: the memory graph.
   entities   String[]     @default([])
+  /// How the person felt about it ("hurt", "excited") and how good or bad it was for them, -2..2.
+  /// With the tags this is the emotion graph (lib/facts.ts emotionMap).
+  feeling    String?
+  valence    Int?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
   deletedAt  DateTime?

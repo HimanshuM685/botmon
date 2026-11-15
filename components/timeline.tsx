@@ -1,7 +1,6 @@
 "use client";
 
 import { useActionState, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { saveFact, trashItem, type ActionState } from "@/app/actions";
 import { syncModel } from "@/lib/model-sync";
@@ -15,10 +14,11 @@ function updateRead(personId: string) {
   });
 }
 
-type Fact = { id: string; kind: string; text: string; source: string; entities: string[]; happenedAt: string | null; createdAt: string };
+type Fact = { id: string; kind: string; text: string; source: string; entities: string[]; feeling: string | null; valence: number | null; happenedAt: string | null; createdAt: string };
 
 const KINDS = { EVENT: "Event", FACT: "Fact", PREFERENCE: "Preference", DATE: "Date" } as const;
 const SOURCE = { ANALYSIS: "from a read", COACH: "from coach", USER: "added by you" } as const;
+const FELT = { "-2": "Very bad", "-1": "Bad", "0": "Neutral", "1": "Good", "2": "Very good" } as const;
 const DOT: Record<string, string> = { EVENT: "bg-heart", FACT: "bg-paper", PREFERENCE: "bg-mint", DATE: "bg-amber" };
 
 export function Timeline({ personId, personName, facts, links, replaced = {} }: {
@@ -91,6 +91,7 @@ export function Timeline({ personId, personName, facts, links, replaced = {} }: 
                         {KINDS[f.kind as keyof typeof KINDS]}
                         {f.happenedAt && ` · ${new Date(f.happenedAt).toLocaleDateString(undefined, { dateStyle: "medium", timeZone: "UTC" })}`}
                         {` · ${SOURCE[f.source as keyof typeof SOURCE]}`}
+                        {f.feeling && <> · <span className={f.valence ? (f.valence > 0 ? "text-mint" : "text-amber") : undefined}>felt {f.feeling}</span></>}
                       </p>
                       {f.entities.length > 0 && (
                         <p className="mt-2 flex flex-wrap gap-1.5">
@@ -117,7 +118,6 @@ export function Timeline({ personId, personName, facts, links, replaced = {} }: 
 }
 
 function DeleteFact({ id, personId }: { id: string; personId: string }) {
-  const router = useRouter();
   return (
     <ConfirmButton
       className="text-xs text-muted hover:text-heart"
@@ -126,8 +126,7 @@ function DeleteFact({ id, personId }: { id: string; personId: string }) {
       description="It moves to the trash for 30 days. Reads and the coach won't add it back, even if it comes up again."
       confirmLabel="Move to trash"
       onDone={() => {
-        toast.success("Moved to trash");
-        router.refresh();
+        toast.success("Moved to trash"); // trashItem already revalidated this page
         updateRead(personId);
       }}
     >
@@ -150,10 +149,10 @@ function FactForm({ personId, fact, onDone }: { personId: string; fact?: Fact; o
   }, [state, onDone, personId]);
 
   return (
-    <form action={(fd) => { action(fd); if (!fact) setText(""); }} className="grid gap-3 sm:grid-cols-[1fr_160px_150px_150px_auto] sm:items-end">
+    <form action={(fd) => { action(fd); if (!fact) setText(""); }} className="grid gap-3 sm:grid-cols-4 sm:items-end">
       <input type="hidden" name="personId" value={personId} />
       {fact && <input type="hidden" name="id" value={fact.id} />}
-      <div>
+      <div className="sm:col-span-2">
         <label className="label" htmlFor={`text-${fact?.id ?? "new"}`}>What</label>
         <input id={`text-${fact?.id ?? "new"}`} name="text" className="input" required maxLength={1000} value={text} onChange={(e) => setText(e.target.value)} placeholder="Got her dream internship" />
       </div>
@@ -170,6 +169,16 @@ function FactForm({ personId, fact, onDone }: { personId: string; fact?: Fact; o
       <div>
         <label className="label" htmlFor={`date-${fact?.id ?? "new"}`}>When</label>
         <input id={`date-${fact?.id ?? "new"}`} name="happenedAt" type="date" className="input" defaultValue={fact?.happenedAt ?? ""} />
+      </div>
+      <div>
+        <label className="label" htmlFor={`feeling-${fact?.id ?? "new"}`}>How they felt</label>
+        <input id={`feeling-${fact?.id ?? "new"}`} name="feeling" className="input" maxLength={24} defaultValue={fact?.feeling ?? ""} placeholder="hurt, excited" title="Optional. One or two words for how they felt about it." />
+      </div>
+      <div>
+        <label className="label" htmlFor={`valence-${fact?.id ?? "new"}`}>For them it was</label>
+        <select id={`valence-${fact?.id ?? "new"}`} name="valence" className="input" defaultValue={String(fact?.valence ?? 0)} title="Only saved together with a feeling.">
+          {Object.entries(FELT).sort((a, b) => Number(a[0]) - Number(b[0])).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
       </div>
       <div className="flex gap-2">
         <button className="btn-primary" disabled={pending}>{pending ? "Saving…" : fact ? "Save" : "Add"}</button>

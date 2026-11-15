@@ -2,10 +2,12 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Msg } from "@/lib/parsers/types";
 import { activityWindows, toLocal, type ChatStats } from "@/lib/stats";
-import { factsForPrompt, normalizeEntity, normalizeFact, toDate, toEntities } from "@/lib/facts";
+import { factsForPrompt, normalizeEntity, normalizeFact, sharesTag, toDate, toEntities, toFeeling, toValence, type FactInput } from "@/lib/facts";
 import { fitToBudget, RELATIONS, type RelationId } from "./prompt";
 
 export const COACH_HISTORY = 60;
+/** Most memories one recall returns (matches first, then their neighbours). */
+const RECALL_MAX = 25;
 
 export const COACH_SYSTEM = `You are the user's personal relationship coach for one specific person in their life. You know this person through a living read of them, a memory of facts and events, and their real chat history when one was uploaded. There may be no chat at all: then everything you know is what the user tells you, and that is enough to work with.
 
@@ -13,6 +15,7 @@ How you help:
 - The user tells you what happened ("she didn't reply since yesterday", "we had a fight") and asks what to do. Answer like a wise, warm friend who knows the whole story: name what is likely going on, then say exactly what to do or send next.
 - Ground every answer in the context below. Refer to specific past moments, facts and patterns. If something isn't in the context, use searchChat before guessing.
 - You keep this person's profile up to date. Whenever the user tells you something new and lasting about the person or the relationship (an event, a plan, a preference, a feeling they showed, a change), call remember, once per separate thing. Don't save small talk or things already in memory.
+- Memories carry how the person felt ("felt: hurt -2") and the emotion map sums that up per person, place and topic. Before you advise or draft anything, check it: how did the topics involved land for them before, what upset them, what helped last time. Build the advice on that and name the memory it rests on. When you call remember and the user's account shows how the person felt, save the feeling too.
 - When the user says something in memory is no longer true or has changed ("they broke up", "the trip is cancelled", "it's on the 14th now"), call correct with the old memory line and the new truth.
 - Saved memories update the read automatically, so never tell the user to re-run or refresh anything. If you saved or corrected something, say so in one short line.
 - With no chat and little memory, ask one or two natural questions to learn what matters (how they met, how often they talk, what happened last) instead of giving generic advice.
@@ -30,7 +33,9 @@ export function buildCoachContext(p: {
   notes: string | null;
   chat: { myName: string; theirName: string; tzOffset: number; stats: ChatStats; msgs: Msg[] } | null;
   read: unknown;
-  facts: { kind: string; text: string; happenedAt: Date | null; entities?: string[] }[];
+  facts: { kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null }[];
+  /** The emotion graph, from emotionMap (lib/facts.ts), built from every alive memory. */
+  emotion?: string;
   budget: number;
   now?: number;
   /** How the user types, from voiceForPrompt (lib/voice.ts). */
@@ -51,6 +56,7 @@ export function buildCoachContext(p: {
   } else parts.push("No chat uploaded yet.");
   parts.push(p.read ? `<latest_read>\n${JSON.stringify(p.read)}\n</latest_read>` : "No read of the chat yet.");
   parts.push(p.facts.length ? `<memory>\n${factsForPrompt(p.facts)}\n</memory>` : "<memory>empty</memory>");
+  if (p.emotion) parts.push(`<emotion_map>\n${p.emotion}\n</emotion_map>`);
   if (p.voice) parts.push(p.voice);
   if (p.chat) {
     const { lines, trimmed } = fitToBudget(p.chat.msgs, p.budget, tz);
@@ -92,9 +98,9 @@ export function coachTools(deps: {
   tz: number;
   knownFacts: string[];
   /** Returns the new memory's id when the store has one (used to link a correction to what it replaced). */
-  saveFact: (f: { kind: "FACT" | "EVENT" | "DATE" | "PREFERENCE"; text: string; happenedAt: Date | null; entities: string[] }) => Promise<string | void>;
+  saveFact: (f: FactInput) => Promise<string | void>;
   /** Alive memories: what can be corrected and recalled. */
-  facts?: { id: string; kind: string; text: string; happenedAt: Date | null; entities?: string[] }[];
+  facts?: { id: string; kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null }[];
   /** Retire a memory (it goes to the trash). */
   retireFact?: (id: string) => Promise<void>;
   linkFacts?: (fromId: string, toId: string, kind: "updates") => Promise<void>;
@@ -102,8 +108,12 @@ export function coachTools(deps: {
   const known = new Set(deps.knownFacts.map(normalizeFact));
   // Starts as the alive memories and is kept current within the turn, so recall/correct see what remember just saved.
   const alive = [...(deps.facts ?? [])];
-  const track = (id: string | void, f: { kind: string; text: string; happenedAt: Date | null; entities: string[] }) => {
+  const track = (id: string | void, f: FactInput) => {
     if (id) alive.push({ id, ...f });
+  };
+  const feelingInput = {
+    feeling: z.string().describe("How the PERSON (not the user) felt about it, one or two plain words like 'hurt', 'excited', 'stressed'. Empty string if not known."),
+    valence: z.number().describe("How good or bad it was for them: -2 very bad, -1 bad, 0 neutral or unknown, 1 good, 2 very good"),
   };
   return {
     searchChat: tool({
@@ -121,12 +131,14 @@ export function coachTools(deps: {
         text: z.string().min(3).max(500).describe("One clear sentence, e.g. 'Had a fight about her ex texting her'"),
         happenedAt: z.string().describe("YYYY-MM-DD if known, else empty string"),
         about: z.array(z.string()).describe("1-4 short tags for who or what this is about, reusing tags already in memory so related memories connect, e.g. 'sister riya', 'job', 'our fight'. Not the person themself."),
+        ...feelingInput,
       }),
-      execute: async ({ kind, text, happenedAt, about }) => {
+      execute: async ({ kind, text, happenedAt, about, feeling, valence }) => {
         const k = normalizeFact(text);
         if (known.has(k)) return { saved: false, reason: "already in memory" };
         known.add(k);
-        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: toEntities(about) };
+        const felt = toFeeling(feeling);
+        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: toEntities(about), feeling: felt, valence: toValence(valence, felt) };
         track(await deps.saveFact(fact), fact);
         return { saved: true, text };
       },
@@ -138,8 +150,9 @@ export function coachTools(deps: {
         replacement: z.string().max(500).describe("The new truth as one clear sentence, or empty string if it is simply no longer true"),
         kind: z.enum(["FACT", "EVENT", "DATE", "PREFERENCE"]),
         happenedAt: z.string().describe("YYYY-MM-DD of the new truth if known, else empty string"),
+        ...feelingInput,
       }),
-      execute: async ({ old, replacement, kind, happenedAt }) => {
+      execute: async ({ old, replacement, kind, happenedAt, feeling, valence }) => {
         if (!deps.retireFact) return { updated: false, reason: "memory can't be changed here" };
         const j = matchMemory(alive.map((f) => f.text), old);
         if (j === "none") return { updated: false, reason: "no matching memory; copy the line exactly from the memory list, or use remember for new information" };
@@ -150,7 +163,9 @@ export function coachTools(deps: {
         if (text.length < 3 || known.has(normalizeFact(text))) return { updated: true, retired: gone.text };
         known.add(normalizeFact(text));
         // The new truth stays connected to everything the old memory was connected to, and points back at it.
-        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [] };
+        // A new feeling replaces the old one; none given keeps how the old memory felt.
+        const felt = toFeeling(feeling);
+        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [], feeling: felt ?? gone.feeling ?? null, valence: felt ? toValence(valence, felt) : gone.valence ?? null };
         const id = await deps.saveFact(fact);
         track(id, fact);
         if (id) await deps.linkFacts?.(id, gone.id, "updates");
@@ -158,12 +173,16 @@ export function coachTools(deps: {
       },
     }),
     recall: tool({
-      description: "Pull every memory connected to a person, place or topic (e.g. 'sister', 'job', 'trip'). Use it when the memory list above looks incomplete for what the user is asking about.",
+      description: "Pull every memory connected to a person, place, topic or feeling (e.g. 'sister', 'job', 'trip', 'hurt'), plus the memories one step away that share a tag with them. Use it when the memory list above looks incomplete for what the user is asking about, or to see what else surrounds a topic.",
       inputSchema: z.object({ about: z.string().min(2).max(60) }),
       execute: async ({ about }) => {
         const q = normalizeEntity(about);
-        const hits = alive.filter((f) => f.entities?.some((e) => e.includes(q) || q.includes(e)) || normalizeFact(f.text).includes(q));
-        return hits.length ? factsForPrompt(hits) : "Nothing in memory about that.";
+        const hits = alive.filter((f) => f.entities?.some((e) => e.includes(q) || q.includes(e)) || normalizeFact(f.text).includes(q) || f.feeling?.includes(q));
+        if (!hits.length) return "Nothing in memory about that.";
+        // One hop through the graph: what else the matching memories are about.
+        const tags = new Set(hits.flatMap((f) => f.entities ?? []));
+        const near = alive.filter((f) => !hits.includes(f) && sharesTag(f, tags)).slice(0, Math.max(0, RECALL_MAX - hits.length));
+        return factsForPrompt(hits.slice(0, RECALL_MAX)) + (near.length ? `\nConnected to these:\n${factsForPrompt(near)}` : "");
       },
     }),
   };

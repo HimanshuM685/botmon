@@ -7,10 +7,11 @@ import { useObject } from "@ai-sdk/react";
 import type { DeepPartial } from "ai";
 import { toast } from "sonner";
 import { analysisSchema, modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
-import { trashItem } from "@/app/actions";
+import { loadRead, trashItem } from "@/app/actions";
 import { ConfirmButton } from "./confirm-button";
 
-type Saved = { id: string; createdAt: string; model: string; mode: string; result: Analysis };
+/** `result` comes with the newest read only; older ones are fetched when picked. */
+type Saved = { id: string; createdAt: string; model: string; mode: string; result?: Analysis };
 /** "none": no read yet; "update": new messages since the last read; "current": nothing new; "changed": chat replaced since. */
 export type ReadState = "none" | "update" | "current" | "changed";
 
@@ -49,6 +50,19 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
   const router = useRouter();
   // null = follow the newest saved analysis
   const [selected, setSelected] = useState<string | null>(null);
+  const [older, setOlder] = useState<Record<string, Analysis>>({});
+  const [picking, setPicking] = useState<string | null>(null);
+  async function pick(id: string) {
+    if (id === history[0]?.id) return setSelected(null);
+    if (!older[id]) {
+      setPicking(id);
+      const r = await loadRead(id).catch(() => null);
+      setPicking(null);
+      if (!r) return toast.error("Couldn't load that read. Try again.");
+      setOlder((o) => ({ ...o, [id]: r }));
+    }
+    setSelected(id);
+  }
   // Newest history id when the current run started; the live object is shown until a newer one arrives via refresh.
   const [baseline, setBaseline] = useState<string | undefined | null>(null);
   const { object, submit, isLoading, stop, clear } = useObject({
@@ -126,7 +140,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
   const latest = history[0];
   const waitingForRefresh = object && baseline !== null && latest?.id === baseline;
   const viewingLatest = !selected && !isLoading && !waitingForRefresh;
-  const saved = (selected ? history.find((h) => h.id === selected) : latest)?.result;
+  const saved = selected ? older[selected] : latest?.result;
   const shown: DeepPartial<Analysis> | undefined =
     isLoading || waitingForRefresh ? object : viewingLatest && adv.object ? overlay(saved, adv.object) : saved;
   const adviceStatus: AdviceStatus | undefined = viewingLatest && latest
@@ -138,7 +152,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="display mr-auto text-3xl">The read</h2>
         {history.length > 1 && !isLoading && (
-          <select aria-label="Past analyses" className="input h-9 w-auto" value={selected ?? latest?.id} onChange={(e) => setSelected(e.target.value === latest?.id ? null : e.target.value)}>
+          <select aria-label="Past analyses" className="input h-9 w-auto" value={picking ?? selected ?? latest?.id} disabled={!!picking} onChange={(e) => pick(e.target.value)}>
             {history.map((h) => <option key={h.id} value={h.id}>{new Date(h.createdAt).toLocaleString()}{h.mode === "incremental" ? " · update" : ""}</option>)}
           </select>
         )}
@@ -151,8 +165,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
             confirmLabel="Move to trash"
             onDone={() => {
               toast.success("Read moved to trash");
-              setSelected(null);
-              router.refresh();
+              setSelected(null); // trashItem already revalidated this page
             }}
           >
             Delete read
