@@ -1,0 +1,111 @@
+{
+  "name": "hinglish-paneer-doodh",
+  "about": "A Hinglish chat: 'panner' is paneer (alias), paneer lands under milk product, and doodh joins milk (sameAs merge), so paneer is a risk.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-05-05 13:00",
+      "from": "Riya",
+      "text": "mujhe doodh se allergy h yaar"
+    },
+    {
+      "at": "2026-05-05 13:01",
+      "from": "Me",
+      "text": "acha"
+    },
+    {
+      "at": "2026-11-12 20:00",
+      "from": "Me",
+      "text": "panner tikka order kr du?"
+    },
+    {
+      "at": "2026-11-12 20:01",
+      "from": "Riya",
+      "text": "nhi mere liye mat krna"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Milk allergy (doodh se allergy)",
+      "date": "2026-05-05",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "AVOIDS",
+          "to": "milk",
+          "label": "allergic"
+        },
+        {
+          "from": "milk",
+          "rel": "IS_A",
+          "to": "milk product",
+          "label": ""
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "Talked about ordering paneer tikka",
+      "tags": [
+        "Paneer"
+      ],
+      "triples": []
+    },
+    {
+      "id": "f3",
+      "text": "She said not to order panner for her",
+      "date": "2026-11-12",
+      "tags": [
+        "panner",
+        "doodh"
+      ],
+      "triples": []
+    }
+  ],
+  "categories": [
+    {
+      "name": "paneer",
+      "parents": [
+        "milk products"
+      ],
+      "sameAs": ""
+    },
+    {
+      "name": "doodh",
+      "parents": [],
+      "sameAs": "milk"
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f1",
+      "rel": "AVOIDS",
+      "line": "mujhe doodh se allergy h yaar",
+      "tone": "sincere",
+      "polarity": -1
+    }
+  ],
+  "focus": "panir tikka order kr du uske liye?",
+  "ask": "uske liye panir tikka order kr du?",
+  "expect": {
+    "edges": [
+      "Paneer IS_A milk product",
+      "Riya AVOIDS milk"
+    ],
+    "findings": [
+      "risk"
+    ],
+    "quote": "mujhe doodh se allergy h yaar",
+    "aliases": {
+      "paneer": [
+        "panner"
+      ],
+      "milk": [
+        "doodh"
+      ]
+    }
+  }
+}

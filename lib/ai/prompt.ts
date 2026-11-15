@@ -111,12 +111,13 @@ ${memory}Computed stats (exact, trust these over your own counting):
  * Model update: the saved read is the current picture; new memories, notes and the date may move parts of it.
  * Sends what changed plus the last few chat messages, never the whole chat.
  */
-export function buildModelPatchPrompt(p: HeaderInput & { read: Analysis; msgs: Msg[]; added: Fact[]; removed: Fact[] }) {
+export function buildModelPatchPrompt(p: HeaderInput & { read: Analysis; msgs: Msg[]; added: Fact[]; removed: Fact[]; /** Findings the graph shows that the read has not seen yet. */ findings?: string[] }) {
   const isAdvice = (k: string) => (ADVICE_KEYS as string[]).includes(k);
   const picture = Object.fromEntries(Object.entries(p.read).filter(([k]) => !isAdvice(k)));
   const previous = Object.fromEntries(Object.entries(p.read).filter(([k]) => isAdvice(k)));
-  const diff = p.added.length || p.removed.length
-    ? `${p.added.length ? `New or edited since your last update:\n${factsForPrompt(p.added)}\n` : ""}${p.removed.length ? `No longer true (the user removed these):\n${factsForPrompt(p.removed)}\n` : ""}`
+  const found = p.findings?.length ? `New findings from the links between memories (each is new information about them, weigh it like a memory):\n${p.findings.map((f) => `! ${f}`).join("\n")}\n` : "";
+  const diff = p.added.length || p.removed.length || found
+    ? `${p.added.length ? `New or edited since your last update:\n${factsForPrompt(p.added)}\n` : ""}${p.removed.length ? `No longer true (the user removed these):\n${factsForPrompt(p.removed)}\n` : ""}${found}`
     : "No single memory is marked as new: re-check the read against the user's current notes, the full memory list and today's date.\n";
   return `${header(p)}
 

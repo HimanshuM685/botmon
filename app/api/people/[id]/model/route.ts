@@ -34,7 +34,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const person = await getPerson(userId, (await params).id);
   if (!person) return Response.json({ error: "Not found" }, { status: 404 });
 
-  const [key, chat, read, allFacts] = await Promise.all([
+  const [key, chat, read, allFacts, findings] = await Promise.all([
     getActiveKey(userId),
     getChat(person.id),
     db.analysis.findFirst({ where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" } }),
@@ -43,9 +43,11 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
       orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }],
       select: { id: true, kind: true, text: true, happenedAt: true, updatedAt: true, deletedAt: true, entities: true, feeling: true, valence: true },
     }),
+    // What the links between memories show: a new finding is new information, like a new memory.
+    db.memoryFinding.findMany({ where: { personId: person.id, retiredAt: null }, select: { key: true, text: true, firstSeenAt: true } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
-  const hash = contextHash(person, facts);
+  const hash = contextHash(person, facts, findings.map((f) => f.key));
   // A first read from memory alone is only for people without a chat; with a chat, the real read comes from Analyze.
   if (read ? !adviceStale(read, hash) : chat || !enoughMemory(facts.length, person.notes)) return new Response(null, { status: 204 });
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
@@ -120,7 +122,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const result = streamText({
     model,
     system: SYSTEM,
-    prompt: buildModelPatchPrompt({ ...base, read: saved, msgs, added, removed }),
+    prompt: buildModelPatchPrompt({ ...base, read: saved, msgs, added, removed, findings: findings.filter((f) => !read.adviceAt || f.firstSeenAt > read.adviceAt).map((f) => f.text) }),
     output: Output.object({ schema: modelPatchSchema }),
     ...sampling,
   });

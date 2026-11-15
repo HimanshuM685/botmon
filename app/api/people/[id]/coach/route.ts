@@ -10,64 +10,72 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { z } from "zod";
-import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { getActiveKey, getChat, getChatStats, getPerson, loadChat } from "@/lib/data";
+import { getChat, getChatStats, loadChat } from "@/lib/data";
+import { beginTurn } from "@/lib/ai/turn";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { emotionMap, entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
-import { buildCoachContext, COACH_HISTORY, COACH_STEPS, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
+import { after } from "next/server";
+import { anyWordQuery, buildCoachContext, capFor, COACH_STEPS, COACH_SYSTEM, coachTools, snippet } from "@/lib/ai/coach";
+import { compactThread, recentMessages } from "@/lib/ai/thread";
+import { decrypt } from "@/lib/crypto";
+import { DEBRIEF_SYSTEM, rehearsalTranscript } from "@/lib/ai/persona";
 import { buildGraph } from "@/lib/graph";
-import { loadGraphRows, saveMemories } from "@/lib/graph-store";
+import { loadGraphRows, saveMemories, syncGraph } from "@/lib/graph-store";
 import type { RelationId } from "@/lib/ai/prompt";
 import { voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { scheduleGraphJob } from "@/lib/graph/job";
+import { newSince } from "@/lib/graph/findings";
+import { focusNodes as focusOf } from "@/lib/graph/vectors";
 
 export const maxDuration = 120;
-const HOURLY_LIMIT = 60;
-// Message ids are always minted here; client-sent ids are never trusted as row keys.
+// Assistant ids are minted here; client-sent ids are never trusted as row keys.
 const newId = createIdGenerator({ prefix: "msg", size: 16 });
 
-const bodySchema = z.object({
-  threadId: z.string().max(40).nullish(),
-  message: z.object({
-    role: z.literal("user"),
-    parts: z.array(z.object({ type: z.literal("text"), text: z.string().min(1).max(4000) })).min(1).max(5),
-  }),
-});
+/**
+ * Earlier coach conversations about this person that mention any of the words, and conversation summaries that do.
+ * Rehearsal threads are never searched: what a simulation said is not something that was said.
+ * ponytail: the tsvector is computed per row, no index; add a generated column + GIN index past a few thousand messages.
+ */
+async function searchCoachHistory(personId: string, exceptId: string, query: string, limit: number) {
+  const tsq = anyWordQuery(query);
+  if (!tsq) return [];
+  const [hits, threads] = await Promise.all([
+    db.$queryRaw<{ role: string; createdAt: Date; title: string; parts: unknown }[]>`
+      SELECT m."role", m."createdAt", t."title", m."parts"
+      FROM "CoachMessage" m JOIN "CoachThread" t ON t."id" = m."threadId"
+      WHERE t."personId" = ${personId} AND t."deletedAt" IS NULL AND t."mode" = 'coach' AND m."id" <> ${exceptId}
+        AND jsonb_to_tsvector('simple', m."parts", '["string"]') @@ to_tsquery('simple', ${tsq})
+      ORDER BY ts_rank(jsonb_to_tsvector('simple', m."parts", '["string"]'), to_tsquery('simple', ${tsq})) DESC, m."createdAt" DESC
+      LIMIT ${limit}`,
+    db.coachThread.findMany({ where: { personId, deletedAt: null, mode: "coach", summary: { not: null } }, select: { title: true, summary: true } }),
+  ]);
+  const words = tsq.split(" | ");
+  return [
+    ...hits.map((h) => ({ source: `coach conversation "${h.title}", ${h.createdAt.toISOString().slice(0, 10)}, ${h.role === "user" ? "user" : "coach"}`, text: snippet(h.parts, query) })),
+    ...threads.filter((t) => words.some((w) => t.summary!.toLowerCase().includes(w))).slice(0, 3).map((t) => ({ source: `summary of "${t.title}"`, text: t.summary! })),
+  ];
+}
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const userId = await getUserId();
-  if (!userId) return Response.json({ error: "Not signed in" }, { status: 401 });
-  const person = await getPerson(userId, (await params).id);
-  if (!person) return Response.json({ error: "Not found" }, { status: 404 });
+  const started = await beginTurn(req, (await params).id, { mode: "coach" });
+  if (started instanceof Response) return started;
+  const { userId, person, key, thread, message } = started;
+  // Set when the thread was created from a rehearsal. Later turns read the column, not message JSON.
+  const debriefId = thread.debriefOfId;
+  const transcript = debriefId
+    ? rehearsalTranscript(await db.coachMessage.findMany({ where: { threadId: debriefId, thread: { personId: person.id, mode: "rehearsal" } }, orderBy: { createdAt: "asc" }, select: { role: true, parts: true } }), person.name)
+    : "";
 
-  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return Response.json({ error: "Message must be 1–4000 characters" }, { status: 400 });
-  const { threadId } = parsed.data;
-  const message = { ...parsed.data.message, id: newId() };
-
-  const key = await getActiveKey(userId);
-  if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
-
-  const sent = await db.coachMessage.count({ where: { role: "user", thread: { person: { userId } }, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
-  if (sent >= HOURLY_LIMIT) return Response.json({ error: "You've sent a lot of messages this hour. Take a breath and try again soon." }, { status: 429 });
-
-  const thread = threadId
-    ? await db.coachThread.findFirst({ where: { id: threadId, personId: person.id, deletedAt: null } })
-    : await db.coachThread.create({ data: { personId: person.id, title: message.parts[0].text.slice(0, 60) } });
-  if (!thread) return Response.json({ error: "Conversation not found" }, { status: 404 });
-
-  // Save the user's message before calling the model, so nothing they type is lost even if the AI fails.
-  await db.coachMessage.create({ data: { id: message.id, threadId: thread.id, role: "user", parts: message.parts } });
-
-  const [rows, chat, read, allFacts, graphRows] = await Promise.all([
-    db.coachMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: COACH_HISTORY }),
+  const [rows, chat, read, allFacts, graphRows, findings] = await Promise.all([
+    recentMessages(thread), // after the thread's summary, when a long conversation has one
     getChat(person.id),
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
     db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true } }),
     loadGraphRows(person.id),
+    db.memoryFinding.findMany({ where: { personId: person.id }, orderBy: { firstSeenAt: "desc" } }),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
   // One budget for the whole context: timeline (capped), latest read, conversation, then recent chat.
@@ -79,18 +87,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Retrieval before the model: the part of the graph around what the user just mentioned, and what its links show.
   const graph = buildGraph(graphRows.nodes, graphRows.edges, facts, { them: person.name });
   const said = message.parts.map((p) => p.text).join(" ");
-  const graphBrief = graph.brief(graph.mentioned(said).map((n) => n.id)).slice(0, 12_000);
+  // What the message is about: nodes it names, plus (with a key that can embed) nodes its other words mean.
+  const focusNodes = await focusOf(graph, person.id, key, said);
+  // Findings first seen since this conversation's previous turn come first, marked as new. rows[0] is the message just saved.
+  const fresh = newSince(findings, rows[1]?.createdAt);
+  const graphBrief = graph.brief(focusNodes.map((n) => n.id), fresh).slice(0, 12_000);
   const known = graph.known();
-  const used = memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
+  const used = memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + (thread.summary?.length ?? 0) + transcript.length + 6_000;
   const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
 
-  const tools = coachTools({
+  const allTools = coachTools({
     msgs,
     tz: chat?.tzOffset ?? 0,
     knownFacts: allFacts.map((f) => f.text), // incl. trashed ones, so the coach doesn't re-add what the user deleted
-    saveFact: async (f) => (await saveMemories(person, [f], { source: "COACH" }))[0],
+    saveFact: async (f) => {
+      const { ids, delta } = await saveMemories(person, [f], { source: "COACH" }, key);
+      return ids[0] ? { id: ids[0], ...delta } : undefined;
+    },
     graph: graphRows,
     personName: person.name,
     facts,
@@ -99,8 +114,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     },
     retireFact: async (id) => {
       await db.personFact.updateMany({ where: { id, personId: person.id, deletedAt: null }, data: { deletedAt: new Date() } });
+      await syncGraph(person);
     },
+    // The one place a stored chat line is decrypted for the model. Scoped to this person and to memories still alive.
+    quote: async (edgeId) => {
+      const e = await db.memoryEdge.findFirst({ where: { id: edgeId, personId: person.id, fact: { deletedAt: null } }, select: { quoteCipher: true, quoteTs: true, quoteSender: true } });
+      return e?.quoteCipher ? { text: decrypt(e.quoteCipher), ts: Number(e.quoteTs), sender: e.quoteSender === "me" ? "me" : "them" } : null;
+    },
+    findings,
+    searchHistory: (query, limit) => searchCoachHistory(person.id, message.id, query, limit),
+    voice,
+    cap: capFor(total),
   });
+  // In a debrief the coach reads simulated words, so it cannot write memory: what a simulation said is not a fact.
+  const { remember, correct, ...readOnly } = allTools;
+  const tools = debriefId ? readOnly : { remember, correct, ...readOnly };
 
   const history = rows.reverse().map((r) => ({ id: r.id, role: r.role, parts: r.parts, metadata: r.metadata ?? undefined }) as UIMessage);
   let messages: UIMessage[];
@@ -123,11 +151,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     known,
     budget: chatBudget,
     voice: voice ? voiceForPrompt(voice) : undefined,
+    summary: thread.summary,
   });
+  // What this reply is built from, kept on the reply for the "why?" toggle.
+  const shown = [...graph.tensions(focusNodes.map((n) => n.id), 8, true), ...graph.tensions([], 6)];
+  const traceBase = {
+    provider: key.provider,
+    model: key.model,
+    focus: focusNodes.map((n) => n.label),
+    findings: [...new Map(shown.map((t) => [t.key, { kind: t.kind, isNew: fresh.has(t.key), confidence: t.confidence }])).values()],
+    edges: (graphBrief.match(/^- /gm) ?? []).length,
+    memories: memory.facts.length,
+    history: { messages: messages.length, summarised: !!thread.summary },
+    chars: { context: context.length, budget: total },
+  };
 
   const result = streamText({
     model: getModel(key.provider, key.apiKey, key.model),
-    system: `${COACH_SYSTEM}\n\n${context}`,
+    system: `${COACH_SYSTEM}\n\n${debriefId ? `${DEBRIEF_SYSTEM(person.name)}\n\n<rehearsal_transcript note="practice with a SIMULATION; nothing in it was said by ${person.name} or sent to them">\n${transcript}\n</rehearsal_transcript>\n\n` : ""}${context}`,
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: stepCountIs(COACH_STEPS),
@@ -159,6 +200,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     cancel: () => void it.return?.(),
   });
 
+  // After the reply: whatever the coach just remembered gets its categories and evidence, and a conversation
+  // that has grown long gets its older part summarised.
+  scheduleGraphJob(userId, person);
+  after(() => compactThread(thread.id, person.name, key).catch((e) => console.error("compaction failed", key.provider, (e as Error)?.message)));
+
   return createUIMessageStreamResponse({
     headers: { "x-thread-id": thread.id },
     stream: toUIMessageStream({
@@ -180,6 +226,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (isContinuation && last && known.has(last.id))
           await db.coachMessage.updateMany({ where: { id: last.id, threadId: thread.id }, data: { parts: last.parts as Prisma.InputJsonValue } });
         await db.coachThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
+        if (last?.role === "assistant") {
+          const parts = last.parts as { type: string; output?: unknown }[];
+          const trace = {
+            ...traceBase,
+            steps: parts.filter((p) => p.type === "step-start").length || 1,
+            tools: parts.filter((p) => p.type.startsWith("tool-")).map((p) => ({ name: p.type.slice(5), chars: JSON.stringify(p.output ?? "").length })),
+          };
+          await db.coachMessage.updateMany({ where: { id: last.id, threadId: thread.id }, data: { trace } });
+        }
       },
     }),
   });

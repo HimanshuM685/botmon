@@ -1,6 +1,8 @@
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { loadChat } from "@/lib/data";
+import { decrypt } from "@/lib/crypto";
+import { exportEdge } from "@/lib/graph/export";
 
 export async function GET() {
   const userId = await getUserId();
@@ -15,11 +17,16 @@ export async function GET() {
       analyses: { orderBy: { createdAt: "asc" } },
       facts: { orderBy: { createdAt: "asc" }, include: { linksFrom: { select: { toId: true, kind: true } } } },
       threads: { orderBy: { createdAt: "asc" }, include: { messages: { orderBy: { createdAt: "asc" } } } },
+      // The memory graph: every node and edge (edges of trashed memories included; their memory carries deletedAt).
+      nodes: { orderBy: { createdAt: "asc" } },
+      edges: { orderBy: { createdAt: "asc" } },
+      findings: { orderBy: { firstSeenAt: "asc" } },
     },
   });
   const data = await Promise.all(
-    people.map(async ({ chats, ...p }) => ({
+    people.map(async ({ chats, edges, ...p }) => ({
       ...p,
+      edges: edges.map((e) => exportEdge(e, decrypt)),
       chats: await Promise.all(chats.map(async ({ cipher, ...c }) => ({ ...c, messages: await loadChat(cipher) }))),
     })),
   );

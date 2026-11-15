@@ -8,6 +8,7 @@ export function PersonTabs({ id }: { id: string }) {
   const tabs = [
     { href: `/people/${id}`, label: "Read" },
     { href: `/people/${id}/coach`, label: "Coach" },
+    { href: `/people/${id}/rehearse`, label: "Practise" },
     { href: `/people/${id}/timeline`, label: "Timeline" },
   ];
   return (

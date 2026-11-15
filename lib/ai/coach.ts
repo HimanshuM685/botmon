@@ -2,16 +2,20 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Msg } from "@/lib/parsers/types";
 import { activityWindows, toLocal, type ChatStats } from "@/lib/stats";
+import { chatLine, rankMessages } from "@/lib/chat-lines";
 import { factsForPrompt, normalizeEntity, normalizeFact, toDate, toEntities, toFeeling, toValence, type FactInput } from "@/lib/facts";
 import { buildGraph, ME, planMemory, THEM, type GEdge, type GNode } from "@/lib/graph";
 import { fitToBudget, RELATIONS, type RelationId } from "./prompt";
 import { tripleSchema } from "./schema";
+import { applyVoice, type Voice } from "@/lib/voice";
 
 export const COACH_HISTORY = 60;
 /** Most memories a recall falls back to when nothing in the graph matches by name. */
 const RECALL_MAX = 25;
-/** Tool rounds per reply: look things up, follow links, read the chat lines, save, then answer. */
-export const COACH_STEPS = 8;
+/** Tool rounds per reply: look things up, follow links, read the quotes, check the draft, save, then answer. Every tool result is size-capped (capFor), which is what keeps 12 rounds inside the route's time and the provider's budget. */
+export const COACH_STEPS = 12;
+/** Most characters one tool result may return. */
+export const capFor = (budget: number) => Math.max(1_500, Math.min(6_000, Math.floor(budget * 0.1)));
 
 export const COACH_SYSTEM = `You are the user's personal relationship coach for one specific person in their life. You know this person through a living read of them, a memory of facts and events, and their real chat history when one was uploaded. There may be no chat at all: then everything you know is what the user tells you, and that is enough to work with.
 
@@ -21,8 +25,9 @@ How you help:
   1. Name the people and things the message is about, including ones only implied (a cheese dish is cheese, and cheese is a milk product).
   2. Read the graph section below for them. If something is missing or thin, call recall for it; call connect to see how two things are linked.
   3. Take the lines marked "!" seriously. They are findings from the links, such as something they did although it costs them, or a plan that touches something they avoid. Such a finding is often the whole point: say it, and say what it means about how they feel.
-  4. When how something was said matters, call searchChat and read the lines around the hit for tone. Try several related words in one query (cheese paneer dairy milk).
+  4. When a finding or link carries a quote marker like [q:abc123], read the quote (call quote with that id) before you rely on it, and cite it with its date: the exact words and how they were said are the evidence. Without a marker, when how something was said matters, call searchChat and read the lines around the hit for tone. Try several related words in one query (cheese paneer dairy milk).
   5. Only then answer.
+- More to look things up with: findings lists what the links have shown so far, with the evidence, including things noticed in earlier conversations; history shows what they used to feel before it changed ("she used to…"); search_history finds what you and the user said in earlier conversations as well as the chat.
 - Every claim about the person names what it rests on: a memory, a link, or a quoted line. If you have nothing on a point, say so and ask one specific question instead of filling the gap with general relationship advice.
 - No stock advice. "Communicate openly", "give her space", "be yourself" are useless on their own: say what to do or the exact words to send, and why it fits this person given what you found.
 - You keep this person's profile up to date. Whenever the user tells you something new and lasting about the person or the relationship (an event, a plan, a preference, a feeling they showed, a change), call remember, once per separate thing, with its triples (who feels or did what towards what) so it joins the graph. Link a new thing to what it is a kind of or made from when that is already known. Don't save small talk or things already in memory.
@@ -30,7 +35,7 @@ How you help:
 - When the user says something in memory is no longer true or has changed ("they broke up", "the trip is cancelled", "it's on the 14th now"), call correct with the old memory line and the new truth.
 - Saved memories update the read automatically, so never tell the user to re-run or refresh anything. If you saved or corrected something, say so in one short line.
 - With no chat and little memory, ask one or two natural questions to learn what matters (how they met, how often they talk, what happened last) instead of giving generic advice.
-- Any message you draft for the user to send must read as if they typed it: follow the "How the user types" section exactly (casing, punctuation, spellings, emoji, length, language mix). Never polish it. Without that section, keep drafts short and plain.
+- Any message you draft for the user to send must read as if they typed it: follow the "How the user types" section exactly (casing, punctuation, spellings, emoji, length, language mix). Never polish it. Without that section, keep drafts short and plain. Before you show the user any message to send, call check_draft with it: it reports anything in it that touches what the person avoids or fears, and where it does not match the user's typing. Fix what it reports and show the corrected text.
 - Keep answers focused: short paragraphs or a few bullets, then a clear next step.
 
 Ethics: encourage honest, respectful communication. Never suggest manipulation, guilt-tripping, jealousy games, pressure or ignoring a "no". If the other person seems uninterested or set a boundary, say so kindly and help the user respect it. If the user describes abuse, self-harm or danger, prioritise safety and suggest real help.
@@ -55,6 +60,8 @@ export function buildCoachContext(p: {
   now?: number;
   /** How the user types, from voiceForPrompt (lib/voice.ts). */
   voice?: string;
+  /** The older part of this conversation, summarised (lib/ai/compact.ts). */
+  summary?: string | null;
 }) {
   const now = p.now ?? Date.now();
   const tz = p.chat?.tzOffset ?? 0;
@@ -75,6 +82,7 @@ export function buildCoachContext(p: {
   if (p.graph) parts.push(`<graph note="links between memories around this message; lines with ! are findings from those links">\n${p.graph}\n</graph>`);
   if (p.known?.length) parts.push(`Names in the graph (reuse them in remember, recall and connect): ${p.known.join(", ")}`);
   if (p.voice) parts.push(p.voice);
+  if (p.summary) parts.push(`<conversation_so_far note="the earlier part of this conversation, summarised; the messages below continue from it">\n${p.summary}\n</conversation_so_far>`);
   if (p.chat) {
     const { lines, trimmed } = fitToBudget(p.chat.msgs, p.budget, tz);
     parts.push(`<recent_chat${trimmed ? ` note="most recent ${lines.length} of ${p.chat.msgs.length} messages; use searchChat for older ones"` : ""}>\n${lines.join("\n")}\n</recent_chat>`);
@@ -90,16 +98,9 @@ const SEARCH_CONTEXT = 2;
  * Each hit comes with the lines around it (the hit itself is marked ">").
  */
 export function searchMessages(msgs: Msg[], query: string, limit: number, tz: number) {
-  const words = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
-  const line = (m: Msg) => `[${toLocal(m.ts, tz).toISOString().slice(0, 16).replace("T", " ")}] ${m.sender}: ${m.text}`;
-  const hits: { i: number; score: number }[] = [];
-  msgs.forEach((m, i) => {
-    const t = m.text.toLowerCase();
-    const score = words.filter((w) => t.includes(w)).length;
-    if (score) hits.push({ i, score });
-  });
+  const line = (m: Msg) => chatLine(m, tz);
   const shown = new Set<number>(), blocks: string[] = [];
-  for (const { i } of hits.sort((a, b) => b.score - a.score || b.i - a.i)) {
+  for (const i of rankMessages(msgs, query)) {
     if (blocks.length >= limit) break;
     if (shown.has(i)) continue; // already inside an earlier hit's context
     const from = Math.max(0, i - SEARCH_CONTEXT), to = Math.min(msgs.length - 1, i + SEARCH_CONTEXT);
@@ -129,12 +130,15 @@ export function matchMemory(texts: string[], old: string): number | "none" | "am
   return close.length === 1 ? close[0].i : close.length ? "ambiguous" : "none";
 }
 
+/** What the store kept for a memory just saved. The turn's graph applies this instead of planning the text again. */
+export type StoredMemory = { id: string; nodes: GNode[]; edges: GEdge[]; aliases: { nodeId: string; alias: string }[] };
+
 export function coachTools(deps: {
   msgs: Msg[];
   tz: number;
   knownFacts: string[];
-  /** Returns the new memory's id when the store has one (used to link a correction to what it replaced). */
-  saveFact: (f: FactInput) => Promise<string | void>;
+  /** The new memory's id, or the nodes, edges and aliases the store actually wrote. A plain id is planned locally. */
+  saveFact: (f: FactInput) => Promise<string | StoredMemory | void>;
   /** Alive memories: what can be corrected and recalled. */
   facts?: { id: string; kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null }[];
   /** Retire a memory (it goes to the trash). */
@@ -144,7 +148,19 @@ export function coachTools(deps: {
   graph?: { nodes: GNode[]; edges: GEdge[] };
   /** The person's name: "Riya" as a triple endpoint means `them`, and it is how they read in tool output. */
   personName?: string;
+  /** The stored chat line behind an edge, decrypted by the server (the only way raw chat leaves the graph). */
+  quote?: (edgeId: string) => Promise<{ text: string; ts: number; sender: "them" | "me" } | null>;
+  /** Stored findings (lib/graph/findings.ts). Without them, what the graph shows right now is listed. */
+  findings?: { key: string; kind: string; text: string; edgeIds: string[]; firstSeenAt: Date; retiredAt: Date | null }[];
+  /** Earlier coach conversations and their summaries, searched by the server. Never rehearsal threads. */
+  searchHistory?: (query: string, limit: number) => Promise<{ source: string; text: string }[]>;
+  /** How the user types (lib/voice.ts), for check_draft. */
+  voice?: Voice | null;
+  /** Most characters a tool result may return (capFor). */
+  cap?: number;
 }) {
+  const max = deps.cap ?? 6_000;
+  const cap = (s: string) => (s.length > max ? `${s.slice(0, max)}\n… (cut: ask for something narrower)` : s);
   const known = new Set(deps.knownFacts.map(normalizeFact));
   // Starts as the alive memories and is kept current within the turn, so recall/correct see what remember just saved.
   const alive = [...(deps.facts ?? [])];
@@ -154,13 +170,29 @@ export function coachTools(deps: {
     const plan = planMemory(nodes, edges, item, { personName: deps.personName });
     nodes.push(...plan.nodes);
     edges.push(...plan.edges);
+    // Other spellings found this turn: recall shows them as "also: …".
+    for (const a of plan.aliases) {
+      const i = nodes.findIndex((n) => n.id === a.nodeId);
+      if (i >= 0 && !nodes[i].aliases.includes(a.alias)) nodes[i] = { ...nodes[i], aliases: [...nodes[i].aliases, a.alias] };
+    }
   };
   if (!deps.graph) for (const f of alive) join({ factId: f.id, tags: f.entities });
   const graph = () => buildGraph(nodes, edges, alive, { them: deps.personName });
-  const track = (id: string | void, f: FactInput) => {
+  const applyStored = (saved: StoredMemory) => {
+    for (const n of saved.nodes) if (!nodes.some((x) => x.id === n.id)) nodes.push(n);
+    for (const e of saved.edges) if (!edges.some((x) => x.id === e.id)) edges.push(e);
+    for (const a of saved.aliases) {
+      const i = nodes.findIndex((n) => n.id === a.nodeId);
+      if (i >= 0 && !nodes[i].aliases.includes(a.alias)) nodes[i] = { ...nodes[i], aliases: [...nodes[i].aliases, a.alias] };
+    }
+  };
+  const track = (saved: string | StoredMemory | void, f: FactInput) => {
+    const id = typeof saved === "string" ? saved : saved?.id;
     if (!id) return;
     alive.push({ id, ...f });
-    join({ factId: id, tags: f.entities, triples: f.triples });
+    // The store already resolved spelling and meaning. Planning again would invent a node it did not keep.
+    if (saved && typeof saved === "object") applyStored(saved);
+    else join({ factId: id, tags: f.entities, triples: f.triples });
   };
   const triplesInput = {
     // Default, like the feeling fields: tool calls stored before the graph existed have no triples.
@@ -178,7 +210,7 @@ export function coachTools(deps: {
       inputSchema: z.object({ query: z.string().min(1).max(100), limit: z.number().int().min(1).max(40).default(8) }),
       execute: async ({ query, limit }) => {
         const hits = searchMessages(deps.msgs, query, limit, deps.tz);
-        return hits.length ? hits.join("\n--\n") : "No messages found.";
+        return hits.length ? cap(hits.join("\n--\n")) : "No messages found.";
       },
     }),
     remember: tool({
@@ -226,8 +258,9 @@ export function coachTools(deps: {
         const felt = toFeeling(feeling);
         // Its edges are the ones given for the new truth; the retired memory's edges leave the graph with it.
         const fact = { kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [], feeling: felt, valence: toValence(valence, felt), triples };
-        const id = await deps.saveFact(fact);
-        track(id, fact);
+        const saved = await deps.saveFact(fact);
+        track(saved, fact);
+        const id = typeof saved === "string" ? saved : saved?.id;
         if (id) await deps.linkFacts?.(id, gone.id, "updates");
         return { updated: true, retired: gone.text, saved: text };
       },
@@ -246,19 +279,20 @@ export function coachTools(deps: {
           const direct = g.newest(all, RECALL_MAX);
           const further = self ? [] : g.newest(g.neighbours([node.id], 2, 400).filter((e) => !all.includes(e)), 15);
           const found = g.tensions([node.id], 8, true);
-          return [
+          // Findings first: if the result is cut, it is the far links that go.
+          return cap([
             `${g.name(node.id)}${node.aliases.length ? ` (also: ${node.aliases.join(", ")})` : ""}`,
+            found.length ? `What the links show:\n${found.map((t) => `! ${t.text}`).join("\n")}` : "",
             direct.length ? direct.map((e) => `- ${g.renderEdge(e)}`).join("\n") : "No links yet.",
             further.length ? `One step further:\n${further.map((e) => `- ${g.renderEdge(e)}`).join("\n")}` : "",
-            found.length ? `What the links show:\n${found.map((t) => `! ${t.text}`).join("\n")}` : "",
-          ].filter(Boolean).join("\n");
+          ].filter(Boolean).join("\n"));
         }
         // Not a node: a feeling ("hurt") or words from a memory. Find those memories, then what they are linked to.
         const q = normalizeEntity(about);
         const hits = alive.filter((f) => normalizeFact(f.text).includes(q) || f.feeling?.includes(q)).slice(-RECALL_MAX); // newest kept: `alive` runs oldest first
         if (!hits.length) return "Nothing in memory about that.";
         const around = g.renderSubgraph([...new Set(hits.flatMap((f) => f.entities ?? []))].flatMap((k) => g.resolve(k)?.id ?? []), 1, 25);
-        return factsForPrompt(hits) + (around ? `\n${around}` : "");
+        return cap(factsForPrompt(hits) + (around ? `\n${around}` : ""));
       },
     }),
     connect: tool({
@@ -270,11 +304,89 @@ export function coachTools(deps: {
         if (!x || !y) return `Not in memory: ${[!x && a, !y && b].filter(Boolean).join(" and ")}.`;
         const chain = g.path(x.id, y.id);
         const found = g.tensions([x.id, y.id], 8, true);
-        return [
+        return cap([
           chain?.length ? `${g.name(x.id)} to ${g.name(y.id)}:\n${chain.map((e) => `- ${g.renderEdge(e)}`).join("\n")}` : `No link between ${g.name(x.id)} and ${g.name(y.id)} within 4 steps.`,
           found.length ? `What the links show:\n${found.map((t) => `! ${t.text}`).join("\n")}` : "",
-        ].filter(Boolean).join("\n");
+        ].filter(Boolean).join("\n"));
+      },
+    }),
+    quote: tool({
+      description: "Read the exact chat line behind a link or finding that carries a quote marker [q:<id>], with the two lines before and after it. Call it before relying on such a link, and cite the line with its date.",
+      inputSchema: z.object({ edgeId: z.string().min(1).max(60).describe("The id from the marker, e.g. 'abc123' for [q:abc123]") }),
+      execute: async ({ edgeId }) => {
+        const q = await deps.quote?.(edgeId.replace(/^\[?q:/, "").replace(/\]$/, "").trim());
+        if (!q) return "No quote stored for that id.";
+        const i = deps.msgs.findIndex((m) => m.ts === q.ts && m.text === q.text);
+        const who = q.sender === "me" ? "the user" : deps.personName ?? "them";
+        // The chat was replaced or trimmed since: the stored line still stands on its own.
+        if (i < 0) return `> ${chatLine({ ts: q.ts, sender: who, text: q.text }, deps.tz)}`;
+        const from = Math.max(0, i - SEARCH_CONTEXT), to = Math.min(deps.msgs.length - 1, i + SEARCH_CONTEXT);
+        return cap(deps.msgs.slice(from, to + 1).map((m, k) => `${from + k === i ? ">" : " "} ${chatLine(m, deps.tz)}`).join("\n"));
+      },
+    }),
+    findings: tool({
+      description: "What the links between memories have shown so far, each with the evidence behind it and when it was first noticed, newest first. Includes findings from earlier conversations. Kinds: cost (did something although it costs them), mixed (changed their mind, or two-sided), attention (remembered something the user said), drift (warming or cooling), open_promise.",
+      inputSchema: z.object({ kind: z.string().default("").describe("One kind to list, or empty string for all") }),
+      execute: async ({ kind = "" }) => {
+        const g = graph();
+        const live = new Map(g.tensions([], 50).map((t) => [t.key, t]));
+        // Stored ones carry when they were first seen; what the graph shows this turn (a memory just saved) is added.
+        const stored = (deps.findings ?? []).filter((f) => !f.retiredAt).map((f) => ({ ...f, since: f.firstSeenAt as Date | null }));
+        const all = [...stored, ...[...live.values()].filter((t) => !stored.some((f) => f.key === t.key)).map((t) => ({ ...t, since: null as Date | null }))]
+          .filter((f) => !kind.trim() || f.kind === kind.trim().toLowerCase())
+          .sort((a, b) => (b.since?.getTime() ?? Infinity) - (a.since?.getTime() ?? Infinity));
+        if (!all.length) return "No findings yet.";
+        const byId = new Map(g.edges.map((e) => [e.id, e]));
+        return cap(all.map((f) => {
+          const behind = f.edgeIds.flatMap((id) => (byId.has(id) ? [`  - ${g.renderEdge(byId.get(id)!)}`] : []));
+          return [`! [${f.kind}, ${f.since ? `first noticed ${f.since.toISOString().slice(0, 10)}` : "new this turn"}] ${f.text}`, ...behind].join("\n");
+        }).join("\n"));
+      },
+    }),
+    history: tool({
+      description: "What the person used to feel about something before it changed: the older link, and the newer one that replaced it. Use it to say 'she used to…' with dates. Give the person's name to list every change.",
+      inputSchema: z.object({ about: z.string().min(2).max(60) }),
+      execute: async ({ about }) => {
+        const g = graph();
+        const node = g.resolve(about);
+        if (!node) return "Nothing in memory about that.";
+        const past = g.history(node.id);
+        return past.length ? cap(past.map((h) => `- before: ${g.renderEdge(h.was)}\n  now: ${g.renderEdge(h.now)}`).join("\n")) : `Nothing about ${g.name(node.id)} has changed in memory.`;
+      },
+    }),
+    search_history: tool({
+      description: "Search what was said before: your earlier conversations with the user about this person (and their summaries), and the chat itself. Use it when the user refers to something discussed earlier ('like you said last week', 'the plan we made'). Results are labelled by where they come from.",
+      inputSchema: z.object({ query: z.string().min(1).max(100), limit: z.number().int().min(1).max(20).default(6) }),
+      execute: async ({ query, limit }) => {
+        const [talks, chat] = [await deps.searchHistory?.(query, limit) ?? [], searchMessages(deps.msgs, query, limit, deps.tz)];
+        const out = [...talks.map((t) => `[${t.source}] ${t.text}`), ...chat.map((c) => `[chat]\n${c}`)];
+        return out.length ? cap(out.join("\n--\n")) : "Nothing found.";
+      },
+    }),
+    check_draft: tool({
+      description: "Check a message you drafted for the user to send, before showing it: does it touch anything the person avoids, fears or dislikes, and does it match how the user types. Returns the problems and the text with the user's typing habits applied.",
+      inputSchema: z.object({ text: z.string().min(1).max(1000) }),
+      execute: async ({ text }) => {
+        const g = graph();
+        const risks = g.tensions(g.mentioned(text).map((n) => n.id), 8, true).filter((t) => t.kind === "risk");
+        const typed = applyVoice(text, deps.voice ?? null);
+        const problems = [...risks.map((t) => t.text), ...(typed !== text ? ["Typing: this does not match how the user types. Use the corrected text."] : [])];
+        return { ok: problems.length === 0, problems, text: typed };
       },
     }),
   };
+}
+
+/** A Postgres tsquery matching any of the words ('cheese | paneer'), or null when there is nothing to search for. */
+export function anyWordQuery(query: string) {
+  const words = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1))].slice(0, 12);
+  return words.length ? words.join(" | ") : null;
+}
+
+/** The text of a stored coach message around the first word it matches. */
+export function snippet(parts: unknown, query: string, width = 300) {
+  const text = (Array.isArray(parts) ? parts : []).flatMap((p: { type?: string; text?: string }) => (p?.type === "text" && p.text ? [p.text] : [])).join(" ").replace(/\s+/g, " ");
+  const at = Math.min(...query.toLowerCase().split(/\s+/).filter(Boolean).map((w) => text.toLowerCase().indexOf(w)).filter((i) => i >= 0), text.length);
+  const from = Math.max(0, (at === text.length ? 0 : at) - 80);
+  return `${from ? "…" : ""}${text.slice(from, from + width)}${from + width < text.length ? "…" : ""}`;
 }

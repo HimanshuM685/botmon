@@ -7,11 +7,12 @@ import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
 import { getModel } from "@/lib/ai/provider";
 import { seedFor, streamResponse } from "@/lib/ai/stream";
-import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact } from "@/lib/facts";
+import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact, untouched } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { scheduleGraphJob } from "@/lib/graph/job";
 
 export const maxDuration = 300;
 /** Memories last changed before this could not have had a feeling set or cleared by the user (migration memory_feeling). */
@@ -102,6 +103,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     maxRetries: 1,
   });
 
+  // Once the read is saved and sent: categories for the new things, typed edges for older memories.
+  scheduleGraphJob(userId, person);
+
   return streamResponse(result.stream, {
     label: `analyze ${key.provider} ${key.model}`,
     headers: { "x-read-mode": mode, "x-read-messages": String(newMessages) },
@@ -123,14 +127,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const found = factsFromAnalysis(output);
       const fresh = newFacts(allFacts.map((f) => f.text), found);
       // Saved through the graph store: each memory's triples become nodes and edges.
-      await saveMemories(person, fresh, { source: "ANALYSIS", analysisId: run.id });
+      await saveMemories(person, fresh, { source: "ANALYSIS", analysisId: run.id }, key);
       // Connect older memories too: ones saved before tags or feelings existed get what this read gave the same fact.
       // Only never-edited memories: if the user edited one (e.g. cleared its tags), that choice stands.
       // Feelings also reach memories last changed before feelings existed: nobody could have cleared one then
       // (this covers memories an earlier tag backfill had touched).
       // One transaction = one connection, so a large timeline can't flood the pool.
       const again = new Map(found.map((f) => [normalizeFact(f.text), f]));
-      const untouched = (f: { createdAt: Date; updatedAt: Date }) => f.updatedAt.getTime() - f.createdAt.getTime() < 1000;
       const backfill = facts
         .map((f) => ({ f, now: again.get(normalizeFact(f.text)) }))
         .map(({ f, now }) => ({ f, now, tags: !!now && untouched(f) && !f.entities.length && now.entities.length > 0, felt: !!now?.feeling && !f.feeling && (untouched(f) || f.updatedAt < FEELINGS_SINCE) }))
@@ -151,7 +154,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         if (!now || !untouched(f) || !(now.triples?.length || gotTags.has(f.id))) return [];
         return [{ f, tags: gotTags.has(f.id) ? now.entities : f.entities, triples: now.triples }];
       }).slice(0, 200);
-      const linked = await linkMemories(person, relink.map(({ f, tags, triples }) => ({ factId: f.id, tags, triples })));
+      const { entities: linked } = await linkMemories(person, relink.map(({ f, tags, triples }) => ({ factId: f.id, tags, triples })), key);
       // The tag list cached on each memory follows the graph, as for new memories (saveMemories).
       const retag = relink.filter(({ f, tags }) => (linked.get(f.id) ?? tags).join("|") !== tags.join("|"));
       if (retag.length)

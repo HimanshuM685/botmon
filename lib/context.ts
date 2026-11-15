@@ -4,15 +4,20 @@ import { createHash } from "node:crypto";
 export const ADVICE_MAX_AGE_DAYS = 3;
 
 /**
- * Fingerprint of everything outside the chat that advice depends on: the person's details and the alive timeline.
+ * Fingerprint of everything outside the chat that advice depends on: the person's details, the alive timeline
+ * and what the links between memories show.
  * A hash, not timestamps: a read saves its own facts right after finishing, which would look like a change.
  */
 export function contextHash(
   person: { notes: string | null; relation: string; gender: string },
   facts: { id: string; updatedAt: Date }[],
+  /** Keys of the findings the graph shows now (lib/graph/findings.ts). A new or vanished one is new information. */
+  findings: string[] = [],
 ) {
   const h = createHash("sha256").update(JSON.stringify([person.notes ?? "", person.relation, person.gender]));
   for (const f of [...facts].sort((a, b) => (a.id < b.id ? -1 : 1))) h.update(`|${f.id}:${f.updatedAt.getTime()}`);
+  // Nothing is added without findings, so fingerprints from before findings existed stay valid.
+  for (const k of [...findings].sort()) h.update(`|!${k}`);
   return h.digest("hex").slice(0, 32);
 }
 

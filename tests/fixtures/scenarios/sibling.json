@@ -1,0 +1,62 @@
+{
+  "name": "sibling",
+  "about": "A person in her life: KNOWS with the relationship as label, a person node, and neighbours through shared memories.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-07-07 10:00",
+      "from": "Riya",
+      "text": "my sister Meera is getting married in december"
+    },
+    {
+      "at": "2026-07-07 10:01",
+      "from": "Me",
+      "text": "congrats to her"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Her sister Meera is getting married in December",
+      "date": "2026-07-07",
+      "tags": [
+        "wedding"
+      ],
+      "triples": [
+        {
+          "from": "them",
+          "rel": "KNOWS",
+          "to": "Meera",
+          "label": "sister"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f1",
+      "rel": "KNOWS",
+      "line": "my sister Meera is getting married in december",
+      "tone": "warm",
+      "polarity": 2
+    }
+  ],
+  "ask": "Who is Meera again and what's coming up with her?",
+  "expect": {
+    "edges": [
+      "Riya KNOWS Meera"
+    ],
+    "findings": [],
+    "quote": "my sister Meera is getting married in december",
+    "kinds": {
+      "meera": "person"
+    },
+    "neighbours": {
+      "meera": [
+        "wedding"
+      ]
+    }
+  }
+}

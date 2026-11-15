@@ -1,0 +1,187 @@
+{
+  "name": "cheese-cost",
+  "about": "She offers to cook something she dislikes and can't eat: effort at a cost, said warmly.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-03-02 09:10",
+      "from": "Riya",
+      "text": "btw i can't have milk, i'm allergic"
+    },
+    {
+      "at": "2026-03-02 09:11",
+      "from": "Me",
+      "text": "oh noted"
+    },
+    {
+      "at": "2026-11-14 20:01",
+      "from": "Me",
+      "text": "i love cheese so much"
+    },
+    {
+      "at": "2026-11-14 20:02",
+      "from": "Riya",
+      "text": "I don't like cheese but I can make it for you even though I don't like it"
+    },
+    {
+      "at": "2026-11-14 20:03",
+      "from": "Me",
+      "text": "you're the best"
+    },
+    {
+      "at": "2026-11-14 20:04",
+      "from": "Riya",
+      "text": "anything for you 🙂"
+    },
+    {
+      "at": "2026-11-01 10:00",
+      "from": "Riya",
+      "text": "ok 0"
+    },
+    {
+      "at": "2026-11-01 11:00",
+      "from": "Me",
+      "text": "ok 1"
+    },
+    {
+      "at": "2026-11-01 12:00",
+      "from": "Riya",
+      "text": "ok 2"
+    },
+    {
+      "at": "2026-11-01 13:00",
+      "from": "Me",
+      "text": "ok 3"
+    },
+    {
+      "at": "2026-11-02 10:00",
+      "from": "Riya",
+      "text": "ok 4"
+    },
+    {
+      "at": "2026-11-02 11:00",
+      "from": "Me",
+      "text": "ok 5"
+    },
+    {
+      "at": "2026-11-02 12:00",
+      "from": "Riya",
+      "text": "ok 6"
+    },
+    {
+      "at": "2026-11-02 13:00",
+      "from": "Me",
+      "text": "ok 7"
+    },
+    {
+      "at": "2026-11-03 10:00",
+      "from": "Riya",
+      "text": "ok 8"
+    },
+    {
+      "at": "2026-11-03 11:00",
+      "from": "Me",
+      "text": "ok 9"
+    },
+    {
+      "at": "2026-11-03 12:00",
+      "from": "Riya",
+      "text": "ok 10"
+    },
+    {
+      "at": "2026-11-03 13:00",
+      "from": "Me",
+      "text": "ok 11"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "Allergic to milk",
+      "date": "2026-03-02",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "AVOIDS",
+          "to": "milk",
+          "label": "allergic"
+        },
+        {
+          "from": "milk",
+          "rel": "IS_A",
+          "to": "milk product",
+          "label": ""
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "Offered to make me a cheese dish even though she doesn't like cheese",
+      "date": "2026-11-14",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DISLIKES",
+          "to": "cheese",
+          "label": ""
+        },
+        {
+          "from": "them",
+          "rel": "DID_FOR",
+          "to": "cheese",
+          "label": "offered to cook it for me"
+        },
+        {
+          "from": "me",
+          "rel": "LIKES",
+          "to": "cheese",
+          "label": ""
+        },
+        {
+          "from": "cheese",
+          "rel": "IS_A",
+          "to": "milk product",
+          "label": ""
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f2",
+      "rel": "DID_FOR",
+      "line": "I don't like cheese but I can make it for you even though I don't like it",
+      "tone": "warm",
+      "polarity": 1
+    },
+    {
+      "memory": "f1",
+      "rel": "AVOIDS",
+      "line": "btw i can't have milk, i'm allergic",
+      "tone": "sincere",
+      "polarity": -1
+    }
+  ],
+  "focus": "does she care about me? thinking of a cheese fondue date",
+  "ask": "Does she actually care about me? I was thinking of a cheese fondue place for our next date.",
+  "expect": {
+    "edges": [
+      "cheese IS_A milk product",
+      "milk IS_A milk product",
+      "Riya AVOIDS milk",
+      "Riya DISLIKES cheese",
+      "the user LIKES cheese",
+      "Riya DID_FOR cheese"
+    ],
+    "findings": [
+      "cost",
+      "risk"
+    ],
+    "quote": "I don't like cheese but I can make it for you even though I don't like it"
+  },
+  "not": [
+    "mixed"
+  ]
+}

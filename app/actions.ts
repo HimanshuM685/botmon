@@ -2,14 +2,15 @@
 
 import { generateText } from "ai";
 import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@/lib/facts";
-import { pruneGraph, retagMemory, saveMemories } from "@/lib/graph-store";
+import { pruneGraph, retagMemory, saveMemories, syncGraph } from "@/lib/graph-store";
+import { scheduleGraphJob } from "@/lib/graph/job";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { auth, requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
-import { encrypt } from "@/lib/crypto";
-import { MAX_PEOPLE, getPerson } from "@/lib/data";
+import { decrypt, encrypt } from "@/lib/crypto";
+import { MAX_PEOPLE, getActiveKey, getPerson } from "@/lib/data";
 import { alive } from "@/lib/trash";
 import { MODELS_URL, parseModelList, PROVIDER_IDS, type ProviderId } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
@@ -190,6 +191,8 @@ export async function trashItem(kindInput: string, id: string): Promise<ActionSt
   const item = await ownedItem(user.id, kind.data, id);
   if (!item) return { error: "Not found" };
   await setDeleted(kind.data, id, new Date());
+  // A memory left: what it had overtaken counts again, and what rested on it is gone.
+  if (kind.data === "fact") await syncGraph({ id: item.personId });
   revalidatePath(`/people/${item.personId}`, "layout");
   revalidatePath("/trash");
   return { ok: true };
@@ -226,6 +229,7 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
     ]);
     await rebuildMemories(person, again.reads);
   } else if (kind.data !== "person") await setDeleted(kind.data, id, null);
+  if (kind.data === "fact") await syncGraph({ id: item.personId });
 
   revalidatePath("/", "layout");
   return { ok: true };
@@ -359,14 +363,34 @@ export async function saveFact(_: ActionState, form: FormData): Promise<ActionSt
     // The graph follows the tags: edges to things no longer tagged go, new tags are linked.
     await retagMemory(person, id, parsed.data.entities);
   } else {
-    await saveMemories(person, [parsed.data], { source: "USER" });
+    // With the user's key, a new name that means something already known joins it (lib/graph/vectors.ts).
+    await saveMemories(person, [parsed.data], { source: "USER" }, (await getActiveKey(user.id)) ?? undefined);
   }
+  scheduleGraphJob(user.id, person);
   // The whole person section: the read's advice depends on the timeline too.
   revalidatePath(`/people/${personId}`, "layout");
   return { ok: true };
 }
 
+/** The chat line behind a graph edge, for the memory map: decrypted here, on demand, for the owner only. */
+export async function edgeQuote(edgeId: string): Promise<{ text: string; date: string; by: string } | null> {
+  const user = await requireUser();
+  const e = await db.memoryEdge.findFirst({
+    where: { id: edgeId, person: { userId: user.id, ...alive }, fact: { ...alive } },
+    select: { quoteCipher: true, quoteTs: true, quoteSender: true, person: { select: { name: true } } },
+  });
+  if (!e?.quoteCipher) return null;
+  return { text: decrypt(e.quoteCipher), date: e.quoteTs ? new Date(Number(e.quoteTs)).toISOString().slice(0, 10) : "", by: e.quoteSender === "me" ? "You" : e.person.name };
+}
+
 /* ---------- Coach threads ---------- */
+
+/** What a coach reply was built from (the "why?" toggle). Owner-scoped through the thread's person. */
+export async function loadTrace(messageId: string): Promise<Record<string, unknown> | null> {
+  const user = await requireUser();
+  const m = await db.coachMessage.findFirst({ where: { id: messageId, thread: { ...alive, person: { userId: user.id, ...alive } } }, select: { trace: true } });
+  return (m?.trace ?? null) as Record<string, unknown> | null;
+}
 
 export async function renameThread(id: string, title: string): Promise<ActionState> {
   const user = await requireUser();

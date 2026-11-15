@@ -43,6 +43,26 @@ export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
 // Chat history budget in characters; Gemini has a ~1M token window, others are smaller.
 export const CHAR_BUDGET: Record<ProviderId, number> = { GEMINI: 600_000, OPENAI: 200_000, GROK: 400_000, GROQ: 40_000, NIM: 60_000, OPENROUTER: 200_000 };
 
+/**
+ * The cheapest capable model of each provider, for background graph work (lib/graph/job.ts): categories, typed
+ * edges for old memories, evidence, summaries. A key that can't use it falls back to the user's own model.
+ */
+export const CHEAP_MODEL: Record<ProviderId, string> = {
+  GEMINI: "gemini-flash-lite-latest",
+  OPENAI: "gpt-5.6-luna",
+  GROK: "grok-4.20-non-reasoning",
+  GROQ: "llama-3.3-70b-versatile",
+  NIM: "meta/llama-3.3-70b-instruct",
+  OPENROUTER: "~deepseek/deepseek-flash-latest",
+};
+
+/**
+ * Providers whose key can embed, and the model used (lib/graph/vectors.ts). The others (Grok, Groq, OpenRouter)
+ * resolve names by spelling only; nothing else changes for them.
+ */
+export const EMBED_MODEL: Partial<Record<ProviderId, string>> = { GEMINI: "gemini-embedding-001", OPENAI: "text-embedding-3-small", NIM: "baai/bge-m3" };
+export const embedModelFor = (provider: ProviderId) => EMBED_MODEL[provider] ?? null;
+
 /** Which provider a pasted key belongs to, from its prefix. Undefined when it doesn't look like any of them. */
 export function detectProvider(key: string): ProviderId | undefined {
   const k = key.trim();

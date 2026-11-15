@@ -1,0 +1,54 @@
+{
+  "name": "memory-only",
+  "about": "No chat at all: findings still come from what the user told the coach; no quotes, no tone.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "She is scared of dogs",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "FEARS",
+          "to": "dogs",
+          "label": ""
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "text": "She came with me to walk my dog Bruno anyway",
+      "date": "2026-11-08",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DID_FOR",
+          "to": "dogs",
+          "label": "came to walk my dog"
+        },
+        {
+          "from": "bruno",
+          "rel": "IS_A",
+          "to": "dogs",
+          "label": ""
+        }
+      ]
+    }
+  ],
+  "focus": "should we go to the park with the dogs",
+  "ask": "Should I invite her to the dog park on Sunday?",
+  "expect": {
+    "edges": [
+      "Riya FEARS dogs",
+      "Riya DID_FOR dogs",
+      "bruno IS_A dogs"
+    ],
+    "findings": [
+      "cost",
+      "risk"
+    ]
+  }
+}

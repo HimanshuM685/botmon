@@ -1,0 +1,54 @@
+{
+  "name": "open-promise",
+  "about": "She promised something six weeks ago and it never came up again.",
+  "person": "Riya",
+  "me": "Me",
+  "now": "2026-11-15",
+  "chat": [
+    {
+      "at": "2026-10-01 17:00",
+      "from": "Riya",
+      "text": "i promise i'll show you my paintings soon"
+    },
+    {
+      "at": "2026-10-01 17:01",
+      "from": "Me",
+      "text": "can't wait"
+    }
+  ],
+  "memories": [
+    {
+      "id": "f1",
+      "text": "She promised to show me her paintings",
+      "date": "2026-10-01",
+      "triples": [
+        {
+          "from": "them",
+          "rel": "DID_FOR",
+          "to": "her paintings",
+          "label": "promised to show"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "memory": "f1",
+      "rel": "DID_FOR",
+      "line": "i promise i'll show you my paintings soon",
+      "tone": "sincere",
+      "polarity": 1
+    }
+  ],
+  "ask": "What's a good reason to see her this week?",
+  "expect": {
+    "edges": [
+      "Riya DID_FOR her paintings"
+    ],
+    "findings": [
+      "open_promise"
+    ],
+    "quote": "i promise i'll show you my paintings soon",
+    "text": "44 days"
+  }
+}

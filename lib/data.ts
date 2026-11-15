@@ -59,6 +59,9 @@ export async function getActiveKey(userId: string) {
 
 /** Fingerprint of the person's notes and alive timeline right now (see lib/context.ts). */
 export async function currentContextHash(person: { id: string; notes: string | null; relation: string; gender: string }) {
-  const facts = await db.personFact.findMany({ where: { personId: person.id, ...alive }, select: { id: true, updatedAt: true } });
-  return contextHash(person, facts);
+  const [facts, findings] = await Promise.all([
+    db.personFact.findMany({ where: { personId: person.id, ...alive }, select: { id: true, updatedAt: true } }),
+    db.memoryFinding.findMany({ where: { personId: person.id, retiredAt: null }, select: { key: true } }),
+  ]);
+  return contextHash(person, facts, findings.map((f) => f.key));
 }
