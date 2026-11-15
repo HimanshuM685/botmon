@@ -12,7 +12,11 @@ import { removeChat } from "@/app/actions";
 type Existing = { myName: string; theirName: string; lastAt: number } | null;
 const fmt = (ts: number) => new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 
-export function ChatUploader({ personId, personName, existing }: { personId: string; personName: string; existing: Existing }) {
+export function ChatUploader({ personId, personName, existing, selfNames = [] }: {
+  personId: string; personName: string; existing: Existing;
+  /** Names the user picked as "me" in earlier uploads (any person): preselected when one is in this chat. */
+  selfNames?: string[];
+}) {
   const hasChat = !!existing;
   const [open, setOpen] = useState(!hasChat);
   const [chat, setChat] = useState<ParsedChat | null>(null);
@@ -45,9 +49,11 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
         { duration: 10_000 },
       );
     setChat(c);
-    // Same chat as before? Reuse who "me" was. Otherwise guess the sender whose name doesn't look like the person's.
+    // Same chat as before? Reuse who "me" was. Then a name picked as "me" before, in any chat. Otherwise guess the
+    // sender whose name doesn't look like the person's.
     const guess =
       (existing && c.senders.includes(existing.myName) ? existing.myName : undefined) ??
+      c.senders.find((s) => selfNames.includes(s)) ??
       c.senders.find((s) => !s.toLowerCase().includes(personName.toLowerCase().split(" ")[0])) ?? c.senders[1] ?? c.senders[0];
     setMe(guess);
   }

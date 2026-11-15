@@ -34,6 +34,25 @@ export const signalsSchema = z
   })
   .describe("Rate each strictly by its anchors and only from observations. With thin evidence stay at 1-2; do not reach 0 or 4 without clear, repeated evidence.");
 
+export const SELF_KINDS = ["INTEREST", "HOBBY", "VALUE", "HABIT", "TEXTING", "AFFECTION", "STRENGTH", "BLIND_SPOT", "PATTERN", "FACT"] as const;
+
+/**
+ * What a read or chapter learned about the USER (not the other person), each with the user's own line as proof.
+ * Kept by lib/self/ingest.ts only when the quote really is one of the user's messages. .catch: never fails a read.
+ */
+export const aboutUserSchema = z
+  .array(
+    z.object({
+      kind: z.enum(SELF_KINDS).describe("INTEREST, HOBBY, VALUE, HABIT (routines), TEXTING (how the user writes or replies), AFFECTION (how the user shows care), STRENGTH, BLIND_SPOT, PATTERN (how the user tends to act in relationships), FACT (job, studies, where they live)"),
+      text: z.string().describe("One short line about the user, e.g. 'Plays football on weekends', 'Apologises fast after a fight'. Never name the other person or anyone else."),
+      quote: z.string().describe("The user's OWN message that shows it, copied exactly. Never the other person's message."),
+      when: z.string().describe("YYYY-MM-DD HH:MM of that message"),
+    }),
+  )
+  .max(8)
+  .catch([])
+  .describe("0-8 things about the USER themself (the one who uploaded the chat), only from their own messages: interests, hobbies, values, habits, how they text and show affection, strengths, blind spots, patterns. Nothing about the other person. Leave it empty when their own lines show nothing lasting.");
+
 /** Graph edges a memory states. Shared by reads and the coach's remember tool. */
 export const tripleSchema = z.object({
   from: z.string().describe("'them' (the person), 'me' (the user), or the name of a person, place or thing. Reuse a known name when it is the same thing."),
@@ -110,6 +129,7 @@ export const analysisSchema = z.object({
   conflicts: z
     .array(z.object({ when: z.string(), about: z.string(), resolved: z.boolean(), lesson: z.string() }))
     .describe("Arguments, tension or hurt feelings and what they teach. Empty if none."),
+  aboutUser: aboutUserSchema,
   yourSide: z.object({
     strengths: z.array(z.string()).describe("What the user does well in this chat"),
     blindSpots: z.array(z.string()).describe("What the user does that hurts the connection, said kindly"),
@@ -171,6 +191,7 @@ export const chapterSchema = z.object({
   keyFacts: analysisSchema.shape.keyFacts,
   importantDates: analysisSchema.shape.importantDates,
   conflicts: analysisSchema.shape.conflicts,
+  aboutUser: aboutUserSchema,
   openAtEnd: z.array(z.string()).catch([]).describe("What was still unresolved at the end of this period: questions, promises, plans"),
 });
 export type ChapterResult = z.infer<typeof chapterSchema>;

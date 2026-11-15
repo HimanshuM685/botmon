@@ -2,7 +2,8 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
-import { chatPayloadSchema, getChat, getPerson, loadChat, MAX_CHAT_MESSAGES } from "@/lib/data";
+import { chatPayloadSchema, getChat, getPerson, loadChat, MAX_CHAT_MESSAGES, measureVoices, sealVoices } from "@/lib/data";
+import { refreshSelfVoice, rememberSelfName } from "@/lib/self/store";
 import { mergeChats } from "@/lib/merge";
 import { computeStats } from "@/lib/stats";
 
@@ -44,12 +45,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       data: {
         cipher: encrypt(gzipSync(JSON.stringify({ messages }))),
         stats: computeStats(messages, myName, tzOffset),
+        voiceCipher: sealVoices(measureVoices(messages, myName, theirName)),
         tzOffset,
         msgCount: messages.length,
         firstAt: new Date(messages[0].ts),
         lastAt: new Date(messages[messages.length - 1].ts),
       },
     });
+    await selfAfterUpload(userId, myName);
     return Response.json({ ok: true, mode: "merged", added: added.length, msgCount: messages.length, from: added[0].ts, to: added.at(-1)!.ts });
   }
 
@@ -65,11 +68,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         personId: person.id, source, myName, theirName, tzOffset, createdAt: now, replacedId: existing?.id,
         cipher: encrypt(gzipSync(JSON.stringify({ messages: incoming }))),
         stats: computeStats(incoming, myName, tzOffset),
+        voiceCipher: sealVoices(measureVoices(incoming, myName, theirName)),
         msgCount: incoming.length,
         firstAt: new Date(incoming[0].ts),
         lastAt: new Date(incoming[incoming.length - 1].ts),
       },
     }),
   ]);
+  await selfAfterUpload(userId, myName);
   return Response.json({ ok: true, id: created.id, mode: existing ? "replaced" : "created", added: incoming.length, msgCount: incoming.length });
+}
+
+/** The user's own side of the upload: the name they picked is them, and their voice joins the merged one. */
+async function selfAfterUpload(userId: string, myName: string) {
+  await rememberSelfName(userId, myName);
+  await refreshSelfVoice(userId).catch((e) => console.error("self voice not refreshed", (e as Error)?.message));
 }

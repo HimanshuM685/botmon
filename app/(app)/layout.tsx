@@ -14,6 +14,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <nav className="mx-auto flex h-16 max-w-5xl items-center gap-6 px-5 sm:px-8">
           <Link href="/dashboard" className="display text-xl italic">botmon</Link>
           <Link href="/dashboard" className="text-sm text-muted hover:text-paper">People</Link>
+          <Link href="/me" className="text-sm text-muted hover:text-paper">You</Link>
           <Link href="/settings" className="text-sm text-muted hover:text-paper">Settings</Link>
           <Link href="/trash" className="text-sm text-muted hover:text-paper">Trash</Link>
           <div className="ml-auto flex items-center gap-3">

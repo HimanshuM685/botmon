@@ -4,7 +4,8 @@ import { cache } from "react";
 import { z } from "zod";
 import { db } from "./db";
 import { alive } from "./trash";
-import { decrypt, decryptBuffer } from "./crypto";
+import { decrypt, decryptBuffer, encrypt } from "./crypto";
+import { voiceProfile, type Voice } from "./voice";
 import type { Msg } from "./parsers/types";
 import type { ProviderId } from "./ai/models";
 import { computeStats, type ChatStats } from "./stats";
@@ -40,6 +41,24 @@ export function getChat(personId: string) {
 
 export async function loadChat(cipher: string): Promise<Msg[]> {
   return JSON.parse(gunzipSync(decryptBuffer(cipher)).toString("utf8")).messages;
+}
+
+export type ChatVoices = { me: Voice | null; them: Voice | null };
+
+/** Both sides' voices for a chat's messages, ready to store (encrypted: samples are real messages). */
+export const measureVoices = (msgs: Msg[], myName: string, theirName: string): ChatVoices => ({ me: voiceProfile(msgs, myName), them: voiceProfile(msgs, theirName) });
+export const sealVoices = (v: ChatVoices) => encrypt(JSON.stringify(v));
+
+/**
+ * Stored voices, or for chats uploaded before voices were stored: measured from the messages once and saved.
+ * Pass `msgs` when the chat is already decrypted, so it isn't decrypted twice.
+ */
+export async function getVoices(chat: { id: string; voiceCipher: string | null; myName: string; theirName: string; cipher?: string }, msgs?: Msg[]): Promise<ChatVoices> {
+  if (chat.voiceCipher) return JSON.parse(decrypt(chat.voiceCipher)) as ChatVoices;
+  const all = msgs ?? (await loadChat(chat.cipher ?? (await db.chatUpload.findUniqueOrThrow({ where: { id: chat.id }, select: { cipher: true } })).cipher));
+  const voices = measureVoices(all, chat.myName, chat.theirName);
+  await db.chatUpload.update({ where: { id: chat.id }, data: { voiceCipher: sealVoices(voices) } });
+  return voices;
 }
 
 /** Stored stats, or for chats uploaded before stats were stored: compute from the messages once and save. */

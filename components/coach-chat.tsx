@@ -19,6 +19,12 @@ const practiceStarters = (name: string) => [
   `${name}, can we talk about something?`,
 ];
 
+const selfStarters = () => [
+  "What are my blind spots in relationships?",
+  "What do I usually bring to a conversation?",
+  "How do I come across over text?",
+];
+
 const starters = (name: string) => [
   `${name} hasn't replied since yesterday. What should I do?`,
   "We had a small fight today. How do I make it right?",
@@ -37,7 +43,7 @@ function errorText(e: Error) {
 export function CoachChat({ personId, personName, threadId, initialMessages, threads, canChat, mode = "coach", notice, debriefOf, improve }: {
   personId: string; personName: string; threadId: string | null; initialMessages: UIMessage[]; threads: Thread[]; canChat: boolean;
   /** "rehearsal": the user practises with a simulation of the person (app/api/people/[id]/rehearse). */
-  mode?: "coach" | "rehearsal";
+  mode?: "coach" | "rehearsal" | "self";
   /** A line shown under the rehearsal banner (their style is guessed; not enough is known). */
   notice?: string;
   /** A rehearsal thread to debrief: a new coach conversation starts with its transcript. */
@@ -57,13 +63,15 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
   };
   const lastSent = useRef("");
   const [input, setInput] = useState("");
-  const base = `/people/${personId}/${rehearsal ? "rehearse" : "coach"}`;
+  // "Coach me" threads are the user's own, on /me, with no person.
+  const self = mode === "self";
+  const base = self ? "/me/coach" : `/people/${personId}/${rehearsal ? "rehearse" : "coach"}`;
 
   // Created once; the thread id travels per message via sendMessage's body.
   const [transport] = useState(
     () =>
       new DefaultChatTransport({
-        api: `/api/people/${personId}/${rehearsal ? "rehearse" : "coach"}`,
+        api: self ? "/api/me/coach" : `/api/people/${personId}/${rehearsal ? "rehearse" : "coach"}`,
         prepareSendMessagesRequest: ({ messages, body }) => ({ body: { ...body, message: messages.at(-1) } }),
         fetch: async (url, init) => {
           const res = await fetch(url, init);
@@ -251,14 +259,16 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
           {messages.length === 0 && (
             <div className="grid h-full place-items-center py-10 text-center">
               <div>
-                <p className="display text-2xl">{rehearsal ? "Try it here first." : "Talk it through."}</p>
+                <p className="display text-2xl">{rehearsal ? "Try it here first." : self ? "About you." : "Talk it through."}</p>
                 <p className="mx-auto mt-2 max-w-sm text-sm text-muted">
-                  {rehearsal
+                  {self
+                    ? "Talk about yourself: your patterns, what you're like over text, what you care about. What you tell me here goes to your profile, which every person's coach uses."
+                    : rehearsal
                     ? `Type what you'd send ${personName}. The replies are a simulation built from their real messages and what is known about them. Nothing you practise here is remembered as something they said.`
                     : `Tell me what happened with ${personName}. I remember what you tell me and keep their read up to date, with or without a chat.`}
                 </p>
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
-                  {(rehearsal ? practiceStarters : starters)(personName.split(" ")[0]).map((s) => (
+                  {(self ? selfStarters : rehearsal ? practiceStarters : starters)(personName.split(" ")[0]).map((s) => (
                     <button key={s} className="chip hover:border-heart/50 hover:text-paper" disabled={!canChat} onClick={() => send(s)}>
                       {s}
                     </button>
@@ -301,7 +311,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
                 send(input);
               }
             }}
-            placeholder={!canChat ? (notice && rehearsal ? "Not enough to practise with yet" : "Add an AI key in Settings to chat") : rehearsal ? `Say it the way you'd text ${personName}` : `What happened with ${personName}?`}
+            placeholder={!canChat ? (notice && rehearsal ? "Not enough to practise with yet" : "Add an AI key in Settings to chat") : rehearsal ? `Say it the way you'd text ${personName}` : self ? "Ask about yourself, or tell me something about you" : `What happened with ${personName}?`}
             disabled={!canChat}
             aria-label="Message"
             className="input h-auto min-h-11 flex-1 resize-none py-3"
@@ -339,6 +349,10 @@ function Message({ m, persona }: { m: UIMessage; /** Set in a rehearsal: replies
           if (p.type === "tool-remember" && p.state === "output-available") {
             const out = p.output as { saved?: boolean; text?: string };
             return out?.saved ? <p key={i} className="chip border-mint/40 text-mint">Saved to timeline: {out.text}</p> : null;
+          }
+          if (p.type === "tool-rememberMe" && p.state === "output-available") {
+            const out = p.output as { saved?: boolean; text?: string };
+            return out?.saved ? <p key={i} className="chip border-heart/40 text-heart">Saved to your profile: {out.text}</p> : null;
           }
           if (p.type === "tool-correct" && p.state === "output-available") {
             const out = p.output as { updated?: boolean; retired?: string; saved?: string };

@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 
 /** Models with a 30-day trash (deletedAt). */
-export const SOFT_DELETE_MODELS = new Set(["User", "Person", "ChatUpload", "Analysis", "CoachThread", "PersonFact", "ScoreGoal"]);
+export const SOFT_DELETE_MODELS = new Set(["User", "Person", "ChatUpload", "Analysis", "CoachThread", "PersonFact", "ScoreGoal", "SelfTrait"]);
 const READS = new Set(["findFirst", "findFirstOrThrow", "findMany", "count", "aggregate", "groupBy"]);
 
 /**

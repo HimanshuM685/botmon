@@ -36,6 +36,12 @@ async function openGoal(personId: string, signal: SignalKey) {
   return db.scoreGoal.create({ data: { personId, signal, fromLevel: typeof level === "number" ? level : 0 } });
 }
 
+/** The user's messages this hour across every coach, rehearsal and "Coach me" thread. */
+export async function overHourlyCap(userId: string) {
+  const sent = await db.coachMessage.count({ where: { role: "user", thread: { OR: [{ person: { userId } }, { userId }] }, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
+  return sent >= HOURLY_MESSAGE_LIMIT;
+}
+
 type Person = NonNullable<Awaited<ReturnType<typeof getPerson>>>;
 
 export type StartedTurn = {
@@ -74,8 +80,7 @@ export async function beginTurn(
   const blocked = await opts.gate?.(person);
   if (blocked) return blocked;
 
-  const sent = await db.coachMessage.count({ where: { role: "user", thread: { person: { userId } }, createdAt: { gt: new Date(Date.now() - 3600_000) } } });
-  if (sent >= HOURLY_MESSAGE_LIMIT) return Response.json({ error: "You've sent a lot of messages this hour. Take a breath and try again soon." }, { status: 429 });
+  if (await overHourlyCap(userId)) return Response.json({ error: "You've sent a lot of messages this hour. Take a breath and try again soon." }, { status: 429 });
 
   const { threadId } = parsed.data;
   // Only a rehearsal of this same person can be debriefed, and only as a new coach thread.

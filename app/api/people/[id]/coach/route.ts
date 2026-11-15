@@ -11,7 +11,7 @@ import {
   type UIMessage,
 } from "ai";
 import { db } from "@/lib/db";
-import { getChat, getChatStats, loadChat } from "@/lib/data";
+import { getChat, getChatStats, loadChat, getVoices } from "@/lib/data";
 import { beginTurn } from "@/lib/ai/turn";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
@@ -26,7 +26,10 @@ import { improveSystem, isSignal } from "@/lib/goals";
 import { buildGraph } from "@/lib/graph";
 import { loadGraphRows, saveMemories, syncGraph } from "@/lib/graph-store";
 import type { RelationId } from "@/lib/ai/prompt";
-import { voiceForPrompt, voiceProfile } from "@/lib/voice";
+import { voiceForPrompt } from "@/lib/voice";
+import { ingestSelf, loadSelf, namesFor, selfVoice } from "@/lib/self/store";
+import { commonGround, SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
+import { toldItem } from "@/lib/self/traits";
 import { historyFor } from "@/lib/history-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { newSince } from "@/lib/graph/findings";
@@ -97,9 +100,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const fresh = newSince(findings, rows[1]?.createdAt);
   const graphBrief = graph.brief(focusNodes.map((n) => n.id), fresh).slice(0, 12_000);
   const known = graph.known();
-  const used = memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + (thread.summary?.length ?? 0) + transcript.length + 6_000;
+  // The user's own profile (shared by every person) and what they have in common with this one.
+  const me = await loadSelf(userId);
+  const selfBlock = selfForPrompt({ ...me, relation: person.relation, budget: Math.floor(total * SELF_SHARE) });
+  const common = commonGround(me.traits, graph, person.name);
+  const used = selfBlock.length + common.length + memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + (thread.summary?.length ?? 0) + transcript.length + 6_000;
   const msgs = chat ? await loadChat(chat.cipher) : [];
-  const voice = chat ? voiceProfile(msgs, chat.myName) : null;
+  // This chat's voice, stored at upload; without a chat, the user's voice from their other chats.
+  const voice = chat ? (await getVoices(chat, msgs)).me : await selfVoice(userId);
   // Long chats: what every earlier period held, read once (lib/history.ts). Whatever is read so far is used.
   const chatHistory = chat ? (await historyFor(chat, msgs, total)).text : "";
   const chatBudget = Math.max(3_000, total - used - chatHistory.length);
@@ -131,10 +139,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     searchHistory: (query, limit) => searchCoachHistory(person.id, message.id, query, limit),
     voice,
     cap: capFor(total),
+    // What the user tells about themself goes to their own profile, shared by every person (lib/self).
+    rememberMe: async (kind, text) => {
+      const item = toldItem(kind, text, await namesFor(person, chat?.theirName));
+      if (item) await ingestSelf(userId, person, [item], "COACH");
+      return !!item;
+    },
   });
   // In a debrief the coach reads simulated words, so it cannot write memory: what a simulation said is not a fact.
-  const { remember, correct, ...readOnly } = allTools;
-  const tools = debriefId ? readOnly : { remember, correct, ...readOnly };
+  const { remember, correct, rememberMe, ...readOnly } = allTools;
+  const tools = debriefId ? readOnly : { remember, correct, rememberMe, ...readOnly };
 
   const history = rows.reverse().map((r) => ({ id: r.id, role: r.role, parts: r.parts, metadata: r.metadata ?? undefined }) as UIMessage);
   let messages: UIMessage[];
@@ -158,6 +172,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     budget: chatBudget,
     voice: voice ? voiceForPrompt(voice) : undefined,
     summary: thread.summary,
+    self: selfBlock,
+    common,
     history: chatHistory,
   });
   // What this reply is built from, kept on the reply for the "why?" toggle.
