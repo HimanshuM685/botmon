@@ -12,6 +12,13 @@ const signal = (anchors: string) =>
   z.object({
     level: z.number().describe(`0-4. ${anchors}`),
     evidence: z.string().describe("The observation(s) this rests on, or 'not enough signal'"),
+    // .catch: reads saved before tips existed (and a model that skips one) still parse.
+    tip: z
+      .string()
+      .catch("")
+      .describe(
+        "One thing the user can do this week that would invite more of this from them. It must name a real topic, plan or moment from this chat (e.g. 'ask how getting the braces off felt', 'suggest a time for the chair pickup yourself instead of waiting'). Never generic advice like 'talk more', 'be more open' or 'show interest'. Empty string at level 4.",
+      ),
   });
 
 /** Rated by the model against fixed anchors; the 0-100 score is computed from these in code (lib/stats.ts computeScore). */

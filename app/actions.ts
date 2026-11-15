@@ -70,7 +70,45 @@ export async function listModels(providerInput: string, apiKeyInput: string): Pr
   await requireUser();
   const parsed = keySchema.omit({ model: true }).safeParse({ provider: providerInput, apiKey: apiKeyInput });
   if (!parsed.success) return { error: parsed.error.issues[0].message };
-  const { provider, apiKey } = parsed.data;
+  return fetchModels(parsed.data.provider, parsed.data.apiKey);
+}
+
+/** The user's own saved key for a provider, decrypted here on the server. Never sent to the browser. */
+async function savedKey(userId: string, provider: ProviderId) {
+  const k = await db.apiKey.findUnique({ where: { userId_provider: { userId, provider } }, select: { cipher: true, model: true } });
+  return k && { apiKey: decrypt(k.cipher), model: k.model };
+}
+
+/** The models a key that is already saved can use, asked with that key. For changing its model without pasting it again. */
+export async function listSavedModels(providerInput: string): Promise<{ models?: string[]; current?: string; error?: string }> {
+  const user = await requireUser();
+  const provider = providerSchema.safeParse(providerInput);
+  if (!provider.success) return { error: "Unknown provider" };
+  const k = await savedKey(user.id, provider.data);
+  if (!k) return { error: "No saved key for this provider" };
+  return { ...(await fetchModels(provider.data, k.apiKey)), current: k.model };
+}
+
+/** Switch a saved key to another model. Checked with one tiny call first, so a model the key can't use is never saved. */
+export async function setKeyModel(providerInput: string, modelInput: string): Promise<ActionState> {
+  const user = await requireUser();
+  const parsed = keySchema.pick({ provider: true, model: true }).safeParse({ provider: providerInput, model: modelInput });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { provider, model } = parsed.data;
+  const k = await savedKey(user.id, provider);
+  if (!k) return { error: "No saved key for this provider" };
+  if (k.model === model) return { ok: true };
+  try {
+    await generateText({ model: getModel(provider, k.apiKey, model), prompt: "Reply with OK.", maxOutputTokens: 16, maxRetries: 0 });
+  } catch (e) {
+    return { error: providerError(e) };
+  }
+  await db.apiKey.update({ where: { userId_provider: { userId: user.id, provider } }, data: { model } });
+  revalidatePath("/", "layout");
+  return { ok: true };
+}
+
+async function fetchModels(provider: ProviderId, apiKey: string): Promise<{ models?: string[]; error?: string }> {
   try {
     const res = await fetch(MODELS_URL[provider], {
       headers: provider === "GEMINI" ? { "x-goog-api-key": apiKey } : { authorization: `Bearer ${apiKey}` },

@@ -107,6 +107,7 @@ model Person {
   nodes          MemoryNode[]
   edges          MemoryEdge[]
   findings       MemoryFinding[]
+  goals          ScoreGoal[]
   threads        CoachThread[]
 
   @@index([userId])
@@ -319,6 +320,9 @@ model CoachThread {
   /// Set on a coach thread that debriefs a rehearsal. Simulated lines are loaded from that thread and never saved as facts.
   debriefOfId String?
   debriefOf   CoachThread?  @relation("ThreadDebrief", fields: [debriefOfId], references: [id], onDelete: SetNull)
+  /// Opened from "Improve this" on the read: the score goal this conversation works on
+  goalId      String?
+  goal        ScoreGoal?    @relation(fields: [goalId], references: [id], onDelete: SetNull)
   debriefs    CoachThread[] @relation("ThreadDebrief")
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
@@ -342,4 +346,24 @@ model CoachMessage {
   thread    CoachThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
   @@index([threadId, createdAt])
+}
+
+/// A read score the user chose to work on ("Improve this" on the read). About the user's goal, not about the
+/// person, so it is never a memory. `fromLevel` is the level when it was set; a later read reaching
+/// fromLevel + 1 marks it achieved (lib/goals.ts).
+model ScoreGoal {
+  id         String    @id @default(cuid())
+  personId   String
+  /// A key of signalsSchema (lib/ai/schema.ts): reciprocity, warmth, curiosityAboutUser, ...
+  signal     String
+  fromLevel  Int
+  fromAt     DateTime  @default(now())
+  toLevel    Int?
+  achievedAt DateTime?
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime?
+  person     Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
+  threads    CoachThread[]
+
+  @@index([personId, deletedAt])
 }

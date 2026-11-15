@@ -11,6 +11,7 @@ import { ChatUploader } from "@/components/chat-uploader";
 import { ChatActions } from "@/components/chat-actions";
 import { AnalysisView, type ReadState } from "@/components/analysis-view";
 import type { Analysis } from "@/lib/ai/schema";
+import { pickBaseline } from "@/lib/goals";
 
 export default async function PersonPage({ params }: PageProps<"/people/[id]">) {
   const user = await requireUser();
@@ -18,17 +19,24 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   if (!person) notFound();
 
   const reads = { where: { personId: person.id, ...alive, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" } } as const;
-  const [chat, analyses, others, keyCount, context, factCount] = await Promise.all([
+  const [chat, analyses, others, keyCount, context, factCount, goals] = await Promise.all([
     db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, omit: { cipher: true } }),
     db.analysis.findMany({ ...reads, take: 10, select: { id: true, createdAt: true, model: true, mode: true } }),
     db.person.findMany({ where: { userId: user.id, ...alive, NOT: { id: person.id } }, select: { id: true, name: true }, orderBy: { createdAt: "asc" } }),
     db.apiKey.count({ where: { userId: user.id } }),
     currentContextHash(person),
     db.personFact.count({ where: { personId: person.id, ...alive } }),
+    db.scoreGoal.findMany({ where: { personId: person.id, ...alive }, orderBy: { fromAt: "asc" }, select: { id: true, signal: true, fromLevel: true, fromAt: true, toLevel: true, achievedAt: true } }),
   ]);
   // Only the latest read travels in full; older ones load when picked (loadRead in app/actions.ts).
   // Loaded by the id at the top of the list, so the list and the read shown can never disagree.
   const last = analyses[0] ? await db.analysis.findFirst({ where: { ...reads.where, id: analyses[0].id } }) : null;
+  // Growth: the newest read's scores against an earlier one, about a month back (lib/goals.ts pickBaseline).
+  // Only dates are loaded for all reads; the one picked is loaded in full.
+  const pickedBase = last
+    ? pickBaseline((await db.analysis.findMany({ where: { ...reads.where, NOT: { id: last.id } }, select: { id: true, createdAt: true } })).map((r) => ({ at: r.createdAt, signals: null, id: r.id })), last.createdAt)
+    : undefined;
+  const baseRead = pickedBase ? await db.analysis.findFirst({ where: { ...reads.where, id: (pickedBase as { id: string }).id }, select: { createdAt: true, result: true } }) : null;
   const stats = chat ? await getChatStats(chat) : null;
   const recent = stats ? activityWindows(stats) : null;
   const readState: ReadState = !last || !chat
@@ -60,6 +68,8 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
             ? { label: "Last message", value: `${recent.daysSinceLast}d`, hint: "ago · upload a newer export" }
             : { label: "Last 30 days", value: recent.last30.toLocaleString(), hint: trend(recent.last30, recent.prev30) },
         ] : undefined}
+        compareWith={baseRead ? { at: baseRead.createdAt.toISOString(), signals: (baseRead.result as Analysis | null)?.signals ?? null } : undefined}
+        goals={goals.map((g) => ({ ...g, fromAt: g.fromAt.toISOString(), achievedAt: g.achievedAt?.toISOString() ?? null }))}
         history={analyses.map((a) => ({ ...a, createdAt: a.createdAt.toISOString(), result: a.id === last?.id ? (last.result as Analysis) : undefined }))}
       />
 

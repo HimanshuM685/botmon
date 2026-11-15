@@ -16,6 +16,7 @@ import { computeScore } from "@/lib/stats";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
 import { claimModelRun, releaseModelRun } from "@/lib/model-lock";
 import { loadGraph } from "@/lib/graph-store";
+import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
 
 export const maxDuration = 300;
 const HOURLY_LIMIT = 10; // first reads built from memory share the read limit
@@ -83,6 +84,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     emotion,
     graph: graphBrief,
     known,
+    goals: await goalsPrompt(person.id),
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,
@@ -107,6 +109,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
           const generated = await result.output;
           const output: Analysis = { ...generated, status: { ...generated.status, score: computeScore(generated.signals, null) } };
           await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash: hash, adviceAt: startedAt } });
+          await markReachedGoals(person.id, output.signals);
           await release();
         } catch (e) {
           await discard();
@@ -135,6 +138,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
         // Held to the user's own typing habits, whatever the model did.
         const merged: Analysis = { ...patched, messageSuggestions: patched.messageSuggestions.map((m) => applyVoice(m, voice)), voiceFrom: voice?.count ?? patched.voiceFrom };
         await db.analysis.update({ where: { id: read.id }, data: { result: merged, contextHash: hash, adviceAt: startedAt } });
+        await markReachedGoals(person.id, merged.signals);
       } finally {
         await release();
       }

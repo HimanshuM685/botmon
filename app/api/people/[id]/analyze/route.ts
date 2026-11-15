@@ -13,6 +13,7 @@ import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
 import { scheduleGraphJob } from "@/lib/graph/job";
+import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
 import { historyFor } from "@/lib/history-store";
 
 export const maxDuration = 300;
@@ -95,6 +96,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     emotion,
     graph: graphBrief,
     known,
+    goals: await goalsPrompt(person.id),
     voice: voice ? voiceForPrompt(voice) : undefined,
     history: history.text || undefined,
     historyTo: history.to,
@@ -171,6 +173,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // Fingerprint after the new facts land, so the read's own facts don't make its advice look stale.
       const contextHash = await currentContextHash(person);
       await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash, adviceAt: new Date() } });
+      await markReachedGoals(person.id, output.signals);
       // The chat left while the lines above were saving (after the check at the top): take this run's memories off the
       // timeline too. Erased, not trashed, for the same reason as detachChat (app/actions.ts): a trashed memory tells
       // the AI the user said it is no longer true.

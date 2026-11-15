@@ -17,6 +17,7 @@ Upload a WhatsApp or Instagram chat with someone you care about (crush, girlfrie
 - With a Gemini, OpenAI or NVIDIA key, names are also matched by meaning ("curd" finds "dahi") using embeddings of node labels only, never chat lines. With Grok, Groq or OpenRouter the same flows run on spelling alone
 - Practise tab: rehearse a conversation with a simulation of the person, grounded in their real replies, typing, boundaries and current mood. A permanent banner says it is a simulation; nothing it says is ever saved as memory. "How did I do?" opens a coach debrief that grades your lines and suggests better ones in your voice
 - Memory map: typed links from the person to each topic, coloured by what they say and how it was said, findings flagged on the topics they rest on; click a link to read the exact line behind it
+- Scores you can work on: each of the 7 scores on the read comes with one specific thing to try (tied to something real in your chat, never "talk more"). "Improve this" opens a coach conversation about that score and sets it as a goal; later reads show how each score moved since about a month ago (or since you started working on it) and mark a goal reached when it goes up a level
 - Timeline (long-term memory) per person: filled by reads and the coach, editable by you, used in every read and chat
 - 30-day trash for everything (people, chats, reads, coach conversations, timeline items, the account); restore any time, then erased when you run `npm run purge`
 - Analysis streams in live; history kept per person

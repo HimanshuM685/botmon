@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { analysisSchema, modelPatchSchema, type Analysis, type ModelPatch } from "@/lib/ai/schema";
 import { loadRead, trashItem } from "@/app/actions";
 import { PROVIDERS, type ProviderId } from "@/lib/ai/models";
+import { signalGrowth, SIGNAL_LABEL, type Goal, type SignalKey } from "@/lib/goals";
 import { ConfirmButton } from "./confirm-button";
 
 /** `result` comes with the newest read only; older ones are fetched when picked. */
@@ -39,7 +40,11 @@ function overlay(saved: DeepPartial<Analysis> | undefined, patch: DeepPartial<Mo
 export type ChatNumber = { label: string; value: string; hint: string };
 const menuItem = "block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-ink-3 disabled:opacity-50";
 
-export function AnalysisView({ personId, history, hasChat, canRun, canSync, state, advice, chatNumbers }: {
+export function AnalysisView({ personId, history, hasChat, canRun, canSync, state, advice, chatNumbers, compareWith, goals = [] }: {
+  /** An earlier read to measure the scores' growth against (lib/goals.ts pickBaseline), as ISO date + scores. */
+  compareWith?: { at: string; signals: Analysis["signals"] | null };
+  /** Scores the user is working on ("Improve this"), dates as ISO strings. */
+  goals?: { id: string; signal: string; fromLevel: number; fromAt: string; toLevel: number | null; achievedAt: string | null }[];
   /** Counted from the chat itself (who starts, reply times); shown with the score's breakdown. */
   chatNumbers?: ChatNumber[];
   personId: string;
@@ -300,7 +305,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
       {/* No read yet: the chat's own numbers need no AI, so they show straight away. */}
       {!shown && !isLoading && !!chatNumbers?.length && <div className="card p-6 sm:p-8"><Numbers items={chatNumbers} /></div>}
       {isLoading && !object?.status && <div className="card h-48 animate-pulse" aria-busy />}
-      {shown && <Report a={shown} live={isLoading} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} />}
+      {shown && <Report a={shown} live={isLoading} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} progress={selected ? undefined : { baseline: compareWith, goals }} />}
     </section>
   );
 }
@@ -309,6 +314,9 @@ const SIGNALS = [
   ["reciprocity", "Matches your effort"], ["warmth", "Warmth"], ["curiosityAboutUser", "Curious about you"], ["effort", "Effort in replies"],
   ["consistency", "Consistency"], ["selfDisclosure", "Opens up"], ["futureTalk", "Talks about plans"],
 ] as const;
+
+/** "2026-11-03" or an ISO time as "3 Nov". */
+const shortDay = (iso: string) => new Date(iso.length === 10 ? `${iso}T12:00:00Z` : iso).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
 
 const TREND = { warming: "▲ warming", steady: "● steady", cooling: "▼ cooling" } as const;
 
@@ -327,7 +335,11 @@ function merged(...lists: ((string | undefined)[] | undefined)[]): string[] {
  * Answer first: where things stand, what to do, what to send. Then what to keep in mind.
  * Everything else is grouped by the question it answers and folded until wanted.
  */
-function Report({ a, live, advice, personId, chatNumbers }: { a: DeepPartial<Analysis>; live: boolean; advice?: AdviceStatus; personId: string; chatNumbers?: ChatNumber[] }) {
+function Report({ a, live, advice, personId, chatNumbers, progress }: {
+  a: DeepPartial<Analysis>; live: boolean; advice?: AdviceStatus; personId: string; chatNumbers?: ChatNumber[];
+  /** Only for the newest read: growth and goals are measured up to now, so an older read picked from history shows none. */
+  progress?: { baseline?: { at: string; signals: Analysis["signals"] | null }; goals: { id: string; signal: string; fromLevel: number; fromAt: string; toLevel: number | null; achievedAt: string | null }[] };
+}) {
   const score = a.status?.score == null ? undefined : Math.round(a.status.score);
   const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.success("Copied"));
   const moves = a.nextMoves?.filter((m) => m?.action) ?? [];
@@ -338,6 +350,10 @@ function Report({ a, live, advice, personId, chatNumbers }: { a: DeepPartial<Ana
   const rated = SIGNALS.flatMap(([k, label]) => (typeof a.signals?.[k]?.level === "number" ? [{ label, level: a.signals[k]!.level! }] : []));
   const best = rated.length ? rated.reduce((x, y) => (y.level > x.level ? y : x)) : null;
   const worst = rated.length ? rated.reduce((x, y) => (y.level < x.level ? y : x)) : null;
+  const goalRows: Goal[] = (progress?.goals ?? []).map((g) => ({ ...g, fromAt: new Date(g.fromAt), achievedAt: g.achievedAt ? new Date(g.achievedAt) : null }));
+  const growth = progress ? signalGrowth(a.signals as Analysis["signals"], progress.baseline ? { at: new Date(progress.baseline.at), signals: progress.baseline.signals } : undefined, goalRows) : {};
+  const moved = Object.entries(growth).sort((x, y) => Math.abs(y[1]!.to - y[1]!.from) - Math.abs(x[1]!.to - x[1]!.from))[0];
+  const goalOf = (k: string) => goalRows.filter((g) => g.signal === k).sort((x, y) => y.fromAt.getTime() - x.fromAt.getTime())[0];
   const openConflicts = a.conflicts?.filter((c) => c && !c.resolved).length ?? 0;
   const pad = "p-6 sm:p-8";
 
@@ -428,19 +444,48 @@ function Report({ a, live, advice, personId, chatNumbers }: { a: DeepPartial<Ana
       )}
 
       {(rated.length > 0 || !!chatNumbers?.length) && (
-        <Fold title="Why this score" preview={best && worst && best !== worst ? `Strongest: ${best.label.toLowerCase()} · weakest: ${worst.label.toLowerCase()}` : undefined}>
+        <Fold
+          title="Why this score"
+          preview={moved
+            ? `${SIGNAL_LABEL[moved[0] as SignalKey]} ${moved[1]!.to > moved[1]!.from ? "up" : "down"} ${moved[1]!.from} → ${moved[1]!.to} since ${shortDay(moved[1]!.since)}`
+            : best && worst && best !== worst ? `Strongest: ${best.label.toLowerCase()} · weakest: ${worst.label.toLowerCase()}` : undefined}
+        >
           {rated.length > 0 && (
             <ul className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
               {SIGNALS.map(([k, label]) => {
                 const sg = a.signals?.[k];
                 if (typeof sg?.level !== "number") return null;
+                const g = growth[k], goal = goalOf(k);
                 return (
-                  <li key={k}>
-                    <div className="flex items-center justify-between text-sm"><span>{label}</span><span className="font-mono text-dim">{sg.level}/4</span></div>
+                  <li key={k} className="group">
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <span>{label}</span>
+                      <span className="flex items-center gap-2">
+                        {g && <span className={`font-mono text-xs ${g.to > g.from ? "text-mint" : "text-amber"}`} title={g.goal ? "Since you started working on it" : "Compared with an earlier read"}>{g.to > g.from ? "▲" : "▼"} {g.from} → {g.to} since {shortDay(g.since)}</span>}
+                        <span className="font-mono text-dim">{sg.level}/4</span>
+                      </span>
+                    </div>
                     <div className="mt-1.5 h-1.5 rounded-full bg-ink-3" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={4} aria-valuenow={sg.level}>
                       <div className="h-full rounded-full bg-heart transition-[width] duration-500" style={{ width: `${(sg.level / 4) * 100}%` }} />
                     </div>
                     {sg.evidence && <p className="mt-1.5 text-xs italic text-muted">{sg.evidence}</p>}
+                    {sg.tip && sg.level < 4 && <p className="mt-1.5 text-xs text-paper"><span className="text-mint">Try:</span> {sg.tip}</p>}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      {goal && (
+                        <span className={goal.achievedAt ? "text-mint" : "text-dim"}>
+                          {goal.achievedAt ? `Goal reached ${shortDay(goal.achievedAt.toISOString())}: ${goal.fromLevel} → ${goal.toLevel}` : `Working on it since ${shortDay(goal.fromAt.toISOString())}`}
+                        </span>
+                      )}
+                      {/* On hover or focus with a mouse; always shown on touch screens, which have no hover. */}
+                      {!live && sg.level < 4 && (
+                        <Link
+                          href={`/people/${personId}/coach?improve=${k}`}
+                          className="text-heart underline-offset-4 hover:underline focus-visible:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100"
+                        >
+                          Improve this →
+                        </Link>
+                      )}
+                    </div>
                   </li>
                 );
               })}
