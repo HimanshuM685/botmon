@@ -184,10 +184,19 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
       return { error: `You already track ${MAX_PEOPLE} people. Delete one first to restore this.` };
     await db.person.update({ where: { id: item.personId }, data: { deletedAt: null } });
   }
-  // Only one live chat per person: restoring an old chat sends the current one to the trash.
-  if (kind.data === "chat")
-    await db.chatUpload.updateMany({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, data: { deletedAt: new Date() } });
-  if (kind.data !== "person") await setDeleted(kind.data, id, null);
+  if (kind.data === "chat") {
+    // Only one live chat per person: restoring an old chat sends the current one to the trash, and remembers it.
+    const [back, current] = await Promise.all([
+      db.chatUpload.findUniqueOrThrow({ where: { id }, select: { deletedAt: true } }),
+      db.chatUpload.findFirst({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, select: { id: true } }),
+    ]);
+    await db.$transaction([
+      db.chatUpload.updateMany({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, data: { deletedAt: new Date() } }),
+      db.chatUpload.update({ where: { id }, data: { deletedAt: null, replacedId: current?.id ?? null } }),
+      // Removed as a wrong chat earlier: its reads and their memories went with it at the same moment, so they return with it.
+      ...(back.deletedAt ? await reattachChat(id, item.personId, back.deletedAt) : []),
+    ]);
+  } else if (kind.data !== "person") await setDeleted(kind.data, id, null);
 
   revalidatePath("/", "layout");
   return { ok: true };
@@ -195,20 +204,47 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
 
 /* ---------- Wrong chat: remove it or move it to the right person ---------- */
 
-type OwnedChat = { id: string; personId: string; createdAt: Date };
+type OwnedChat = { id: string; personId: string; createdAt: Date; replacedId: string | null };
 
 function ownedChat(userId: string, chatId: string): Promise<OwnedChat | null> {
-  return db.chatUpload.findFirst({ where: { id: chatId, ...alive, person: { userId, ...alive } }, select: { id: true, personId: true, createdAt: true } });
+  return db.chatUpload.findFirst({ where: { id: chatId, ...alive, person: { userId, ...alive } }, select: { id: true, personId: true, createdAt: true, replacedId: true } });
 }
 
-/** Undo what a chat left on its person: trash the reads made from it and the memories they extracted, and bring back the chat it replaced. */
+/**
+ * The reverse of detachChat, for a chat coming back to a person (moved back, or restored from the trash):
+ * the reads made from it there and the memories they extracted return. Only what detachChat trashed together,
+ * recognised by its shared timestamp `at`; reads the user deleted one by one stay deleted.
+ * ponytail: without `at` (a move back) the latest trashed batch is taken; if the chat left with no live reads,
+ * that can be one read the user deleted by hand. Store a detach stamp on the chat if that ever matters.
+ */
+async function reattachChat(chatId: string, personId: string, at?: Date) {
+  const stamp = at ?? (await db.analysis.findFirst({ where: { chatId, personId, deletedAt: { not: null } }, orderBy: { deletedAt: "desc" }, select: { deletedAt: true } }))?.deletedAt;
+  if (!stamp) return [];
+  const reads = (await db.analysis.findMany({ where: { chatId, personId, deletedAt: stamp }, select: { id: true } })).map((r) => r.id);
+  if (!reads.length) return [];
+  return [
+    db.analysis.updateMany({ where: { id: { in: reads } }, data: { deletedAt: null } }),
+    db.personFact.updateMany({ where: { personId, source: "ANALYSIS", analysisId: { in: reads }, deletedAt: stamp }, data: { deletedAt: null } }),
+  ];
+}
+
+/**
+ * Undo what a chat left on its person: trash the reads made from it, erase the memories they extracted,
+ * and bring back the chat it replaced.
+ * The memories are erased, not trashed: a trashed memory means "the user says this is no longer true"
+ * (model updates tell the AI so, and re-reads never add it back), which is wrong for facts about someone else.
+ * A read still streaming is handled on its side: it re-checks the chat before saving anything (analyze route).
+ */
 async function detachChat(chat: OwnedChat, now: Date) {
   const reads = (await db.analysis.findMany({ where: { chatId: chat.id, ...alive }, select: { id: true } })).map((r) => r.id);
   return [
     db.analysis.updateMany({ where: { id: { in: reads } }, data: { deletedAt: now } }),
-    db.personFact.updateMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads }, deletedAt: null }, data: { deletedAt: now } }),
-    // The replaced chat was trashed at exactly this chat's createdAt (app/api/people/[id]/chat). Older uploads have no match.
-    db.chatUpload.updateMany({ where: { personId: chat.personId, deletedAt: chat.createdAt }, data: { deletedAt: null } }),
+    db.personFact.deleteMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads } } }),
+    // Chats saved before `replacedId` existed: the replaced one was trashed at exactly this chat's createdAt.
+    db.chatUpload.updateMany({
+      where: chat.replacedId ? { id: chat.replacedId, personId: chat.personId, deletedAt: { not: null } } : { personId: chat.personId, deletedAt: chat.createdAt },
+      data: { deletedAt: null },
+    }),
   ];
 }
 
@@ -227,11 +263,14 @@ export async function moveChat(chatId: string, toPersonId: string): Promise<Acti
   const [chat, to] = await Promise.all([ownedChat(user.id, chatId), getPerson(user.id, toPersonId)]);
   if (!chat || !to || to.id === chat.personId) return { error: "Not found" };
   const now = new Date();
+  const theirs = await db.chatUpload.findFirst({ where: { personId: to.id, deletedAt: null }, select: { id: true } });
   await db.$transaction([
     ...(await detachChat(chat, now)),
     db.chatUpload.updateMany({ where: { personId: to.id, deletedAt: null }, data: { deletedAt: now } }),
-    // createdAt = now: it is the newest chat on the new person, and removing it there brings back the one it replaced.
-    db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, createdAt: now } }),
+    // Removing it from the new person brings back the chat it replaced there.
+    db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, replacedId: theirs?.id ?? null } }),
+    // Moved back to a person it was on before: the reads made from it there, and their memories, return.
+    ...(await reattachChat(chat.id, to.id)),
   ]);
   revalidatePath("/", "layout");
   return { ok: true };

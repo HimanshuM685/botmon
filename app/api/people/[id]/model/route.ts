@@ -59,6 +59,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const { added, removed } = changedSince(allFacts, read?.adviceAt ?? null);
   const msgs = chat ? await loadChat(chat.cipher) : [];
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
+  const emotion = emotionMap(facts); // shares the memory budget below
   const base = {
     voice: voice ? voiceForPrompt(voice) : undefined,
     personName: person.name,
@@ -69,8 +70,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     theirName: chat?.theirName,
     stats: chat ? await getChatStats(chat) : null,
     tzOffsetMin: chat?.tzOffset ?? 0,
-    facts: factsWithinBudget(facts, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE), added.flatMap((f) => f.entities)).facts,
-    emotion: emotionMap(facts),
+    facts: factsWithinBudget(facts, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE) - emotion.length, added.flatMap((f) => f.entities)).facts,
+    emotion,
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,

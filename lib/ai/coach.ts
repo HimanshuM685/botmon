@@ -111,9 +111,11 @@ export function coachTools(deps: {
   const track = (id: string | void, f: FactInput) => {
     if (id) alive.push({ id, ...f });
   };
+  // Defaults, not required: tool calls stored in older coach threads have neither field, and a stored call that
+  // fails this schema makes the route drop the whole thread history (validateUIMessages in the coach route).
   const feelingInput = {
-    feeling: z.string().describe("How the PERSON (not the user) felt about it, one or two plain words like 'hurt', 'excited', 'stressed'. Empty string if not known."),
-    valence: z.number().describe("How good or bad it was for them: -2 very bad, -1 bad, 0 neutral or unknown, 1 good, 2 very good"),
+    feeling: z.string().default("").describe("How the PERSON (not the user) felt about it, one or two plain words like 'hurt', 'excited', 'stressed'. Empty string if not known."),
+    valence: z.number().default(0).describe("How good or bad it was for them: -2 very bad, -1 bad, 0 neutral or unknown, 1 good, 2 very good"),
   };
   return {
     searchChat: tool({
@@ -163,9 +165,9 @@ export function coachTools(deps: {
         if (text.length < 3 || known.has(normalizeFact(text))) return { updated: true, retired: gone.text };
         known.add(normalizeFact(text));
         // The new truth stays connected to everything the old memory was connected to, and points back at it.
-        // A new feeling replaces the old one; none given keeps how the old memory felt.
+        // The feeling is about the new truth only: "trip planned, excited" corrected to "trip cancelled" must not stay excited.
         const felt = toFeeling(feeling);
-        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [], feeling: felt ?? gone.feeling ?? null, valence: felt ? toValence(valence, felt) : gone.valence ?? null };
+        const fact = { kind, text, happenedAt: toDate(happenedAt), entities: gone.entities ?? [], feeling: felt, valence: toValence(valence, felt) };
         const id = await deps.saveFact(fact);
         track(id, fact);
         if (id) await deps.linkFacts?.(id, gone.id, "updates");
@@ -182,7 +184,8 @@ export function coachTools(deps: {
         // One hop through the graph: what else the matching memories are about.
         const tags = new Set(hits.flatMap((f) => f.entities ?? []));
         const near = alive.filter((f) => !hits.includes(f) && sharesTag(f, tags)).slice(0, Math.max(0, RECALL_MAX - hits.length));
-        return factsForPrompt(hits.slice(0, RECALL_MAX)) + (near.length ? `\nConnected to these:\n${factsForPrompt(near)}` : "");
+        // Over the cap, keep the end of the list: `alive` runs oldest first, then undated, then what was saved this turn.
+        return factsForPrompt(hits.slice(-RECALL_MAX)) + (near.length ? `\nConnected to these:\n${factsForPrompt(near)}` : "");
       },
     }),
   };

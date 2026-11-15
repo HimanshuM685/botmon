@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { gzipSync, strToU8 } from "fflate";
 import { toast } from "sonner";
@@ -22,12 +22,12 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
   const input = useRef<HTMLInputElement>(null);
   // Uncontrolled: a long chat pasted on a phone shouldn't re-render the page on every change.
   const box = useRef<HTMLTextAreaElement>(null);
-  const pasteArea = useRef<HTMLDetailsElement>(null);
   const router = useRouter();
 
-  // On a phone, pasting is the main way in: show the box without an extra tap.
-  useEffect(() => {
-    if (pasteArea.current && matchMedia("(hover: none)").matches) pasteArea.current.open = true;
+  // On a phone, pasting is the main way in: show the box without an extra tap. A ref callback, so it runs
+  // each time the box appears (after "Add newer export", after Back), not only on first render.
+  const openOnPhone = useCallback((el: HTMLDetailsElement | null) => {
+    if (el && matchMedia("(hover: none)").matches) el.open = true;
   }, []);
 
   /** `pasted`: the text the chat was read from, when it came from the paste box. */
@@ -153,7 +153,7 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
           </div>
           <input ref={input} type="file" accept=".txt,.zip,.json,text/plain,application/zip,application/json" multiple hidden onChange={(e) => onFiles(e.target.files)} />
 
-          <details ref={pasteArea} className="mt-4 text-sm">
+          <details ref={openOnPhone} className="mt-4 text-sm">
             <summary className="cursor-pointer text-muted hover:text-paper">Or paste WhatsApp text</summary>
             <p className="mt-3 text-muted">Select messages in the WhatsApp chat and tap Copy, or copy the text of an exported chat. Both work.</p>
             <label className="sr-only" htmlFor="paste-box">WhatsApp text</label>

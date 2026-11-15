@@ -53,13 +53,14 @@ describe("whatsapp copied messages (no year)", () => {
     expect(at(parseWhatsApp("[31/12, 11:50 pm] Riya: hny", new Date(2027, 0, 2).getTime()).messages[0].ts)).toEqual([2026, 12, 31, 23]);
   });
 
-  it("with every day 12 or lower, picks the order that ends within the last month", () => {
-    expect(at(parseWhatsApp("[5/11, 9:00 am] Riya: a\n[6/11, 9:00 am] Aman: b", now).messages[1].ts)).toEqual([2026, 11, 6, 9]);
-    expect(at(parseWhatsApp("[11/5, 9:00 AM] Riya: a\n[11/6, 9:00 AM] Aman: b", now).messages[1].ts)).toEqual([2026, 11, 6, 9]);
-    // An old export where both orders run forward and neither ends recently: DD/MM stays.
-    expect(at(parseWhatsApp("01/02/2024, 10:00 - A: x\n01/03/2024, 10:00 - B: y", now).messages[0].ts)).toEqual([2024, 2, 1, 10]);
-    // 3 Feb then 1 Mar as DD/MM runs forward; as MM/DD (Mar 2, then Jan 3) it jumps back.
-    expect(at(parseWhatsApp("02/03/2024, 10:00 - A: x\n03/01/2024, 10:00 - B: y", now).messages[0].ts)).toEqual([2024, 2, 3, 10]);
+  it("with every day 12 or lower: forward in time first, then the device's date order", () => {
+    const short = "[5/11, 9:00 am] Riya: a\n[6/11, 9:00 am] Aman: b";
+    expect(at(parseWhatsApp(short, now, false).messages[1].ts)).toEqual([2026, 11, 6, 9]);
+    expect(at(parseWhatsApp(short, now, true).messages[1].ts)).toEqual([2026, 6, 11, 9]);
+    // A day-first chat from 11 Oct, pasted on 15 Nov, is not re-read as 10 Nov.
+    expect(at(parseWhatsApp("11/10/26, 9:00 pm - Riya: a\n11/10/26, 9:05 pm - Aman: b", now, false).messages[0].ts)).toEqual([2026, 10, 11, 21]);
+    // 3 Feb then 1 Mar as DD/MM runs forward; as MM/DD (2 Mar, then 3 Jan) it jumps back: DD/MM even on a month-first device.
+    expect(at(parseWhatsApp("03/02/2024, 10:00 - A: x\n01/03/2024, 10:00 - B: y", now, true).messages[0].ts)).toEqual([2024, 2, 3, 10]);
   });
 
   it("a year-less date without brackets inside a message stays text", () => {

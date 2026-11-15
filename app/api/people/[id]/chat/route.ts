@@ -52,14 +52,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // New chat (or a different pair of names): replace. The old one goes to the trash, restorable for 30 days.
   if (incoming.length < 10) return Response.json({ error: "Need at least 10 messages for a useful analysis" }, { status: 400 });
-  // One timestamp for both: "the chat this one replaced" is the one trashed at this chat's createdAt (removeChat in app/actions.ts).
+  // The new chat remembers which one it replaced, so removing it brings that one back (removeChat in app/actions.ts).
   const now = new Date();
   const [, created] = await db.$transaction([
     db.chatUpload.updateMany({ where: { personId: person.id, deletedAt: null }, data: { deletedAt: now } }),
     db.chatUpload.create({
       select: { id: true },
       data: {
-        personId: person.id, source, myName, theirName, tzOffset, createdAt: now,
+        personId: person.id, source, myName, theirName, tzOffset, createdAt: now, replacedId: existing?.id,
         cipher: encrypt(gzipSync(JSON.stringify({ messages: incoming }))),
         stats: computeStats(incoming, myName, tzOffset),
         msgCount: incoming.length,

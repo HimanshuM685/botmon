@@ -101,6 +101,7 @@ it("recall walks the graph: by feeling, then one tag away; context carries the e
     msgs: [], tz: 0, knownFacts: [],
     facts: [fact("a", "Fight about the trip", ["goa trip"], "hurt", -2), fact("b", "Booked flights", ["goa trip", "money"]), fact("c", "Saving for a bike", ["money"]), fact("d", "Loves sushi", ["food"])],
     saveFact: async (f) => void saved.push({ feeling: f.feeling, valence: f.valence }),
+    retireFact: async () => undefined,
   });
   const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
   const out = String(await run(tools.recall, { about: "hurt" }));
@@ -111,6 +112,23 @@ it("recall walks the graph: by feeling, then one tag away; context carries the e
   await run(tools.remember, { kind: "EVENT", text: "Cried after the call", happenedAt: "", about: [], feeling: "Sad", valence: -5 });
   await run(tools.remember, { kind: "FACT", text: "Has a cat", happenedAt: "", about: [], feeling: "", valence: 2 });
   expect(saved).toEqual([{ feeling: "sad", valence: -2 }, { feeling: null, valence: null }]);
+  // A correction's feeling is about the new truth: the old memory's feeling is not carried over.
+  await run(tools.correct, { old: "Fight about the trip", replacement: "Made up after the trip fight", kind: "EVENT", happenedAt: "", feeling: "", valence: 0 });
+  expect(saved).toHaveLength(3);
+  expect(saved.at(-1)).toEqual({ feeling: null, valence: null });
   const ctx = buildCoachContext({ personName: "Riya", relation: "FRIEND", gender: "FEMALE", notes: null, chat: null, read: null, facts: [], emotion: "- job: leans bad", budget: 1000 });
   expect(ctx).toContain("<emotion_map>\n- job: leans bad\n</emotion_map>");
+});
+
+it("recall over the cap keeps the newest; old stored tool calls without feeling still parse", async () => {
+  const { coachTools } = await import("./coach");
+  const facts = Array.from({ length: 30 }, (_, i) => ({ id: `o${i}`, kind: "EVENT", text: `Job event number ${i}`, happenedAt: null, entities: ["job"] }));
+  const tools = coachTools({ msgs: [], tz: 0, knownFacts: [], facts, saveFact: async () => "new" });
+  const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
+  await run(tools.remember, { kind: "EVENT", text: "She quit her job today", happenedAt: "", about: ["job"], feeling: "", valence: 0 });
+  const out = String(await run(tools.recall, { about: "job" }));
+  expect(out).toContain("She quit her job today");
+  expect(out).not.toContain("Job event number 0");
+  const schema = tools.remember.inputSchema as unknown as { safeParse: (i: object) => { success: boolean } };
+  expect(schema.safeParse({ kind: "FACT", text: "Likes filter coffee", happenedAt: "", about: [] }).success).toBe(true);
 });

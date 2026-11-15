@@ -13,7 +13,14 @@ const clean = (s: string) => s.replace(/[‎‏‪-‮]/g, "").replace(/[  ]/
 
 const DAY = 86_400_000;
 
-export function parseWhatsApp(raw: string, now = Date.now()): ParsedChat {
+/** Does this device write dates month-first (en-US) rather than day-first? */
+function localeMonthFirst() {
+  const parts = new Intl.DateTimeFormat().formatToParts(new Date(2000, 0, 2)).map((p) => p.type);
+  return parts.indexOf("month") < parts.indexOf("day");
+}
+
+/** `monthFirst`: the order to assume when the dates themselves can't tell (defaults to this device's). */
+export function parseWhatsApp(raw: string, now = Date.now(), monthFirst = localeMonthFirst()): ParsedChat {
   const lines = clean(raw).split(/\r?\n/);
   // A date without a year only counts in brackets, so "12/5, 10:00 - works for me" inside a message stays text.
   const heads = lines.map((l) => {
@@ -67,15 +74,13 @@ export function parseWhatsApp(raw: string, now = Date.now()): ParsedChat {
   let messages: Msg[];
   if (order !== undefined) messages = build(order);
   else {
-    // Every day is 12 or lower (short pastes): a chat runs forward in time, and one being added usually ends
-    // within the last month. Take the order with fewer backward jumps, then the one that ends recently.
-    // A tie stays DD/MM.
-    const stale = (end = 0) => Number(end > now + DAY || end < now - 31 * DAY);
-    const score = (m: Msg[]) => [m.filter((x, i) => i > 0 && x.ts < m[i - 1].ts).length, stale(m.at(-1)?.ts)];
+    // Every day is 12 or lower (short pastes), so the dates alone can't tell. A chat runs forward in time:
+    // take the order with fewer backward jumps. Still a tie: the device's own date order, which is what
+    // WhatsApp on that device writes.
+    const score = (m: Msg[]) => m.filter((x, i) => i > 0 && x.ts < m[i - 1].ts).length;
     const [dm, md] = [build(true), build(false)];
-    const [s1, s2] = [score(dm), score(md)];
-    const k = s1.findIndex((v, i) => v !== s2[i]);
-    messages = k >= 0 && s2[k] < s1[k] ? md : dm;
+    const [jumpsDm, jumpsMd] = [score(dm), score(md)];
+    messages = jumpsMd < jumpsDm || (jumpsMd === jumpsDm && monthFirst) ? md : dm;
   }
 
   return { source: "WHATSAPP", messages, senders: sendersOf(messages) };

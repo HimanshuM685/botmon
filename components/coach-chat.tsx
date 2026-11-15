@@ -92,8 +92,10 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
       wrap.current.style.setProperty("--chat-h", `${chatHeight(viewport, card.current.getBoundingClientRect().top + window.scrollY)}px`);
     };
     fit();
-    // On phones the conversation list sits above the card and moves it when it opens or grows.
+    // Anything above the card changing height moves it: the conversation list on phones, the person's name
+    // wrapping after a rename, a font loading. The body covers all of them.
     const ro = new ResizeObserver(fit);
+    ro.observe(document.body);
     if (side.current) ro.observe(side.current);
     window.addEventListener("resize", fit);
     window.visualViewport?.addEventListener("resize", fit);

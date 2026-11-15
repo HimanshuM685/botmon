@@ -52,7 +52,10 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
   const [selected, setSelected] = useState<string | null>(null);
   const [older, setOlder] = useState<Record<string, Analysis>>({});
   const [picking, setPicking] = useState<string | null>(null);
+  // Bumped by every pick and every run: an older read that finishes loading after that must not take over the view.
+  const pickSeq = useRef(0);
   async function pick(id: string) {
+    const seq = ++pickSeq.current;
     if (id === history[0]?.id) return setSelected(null);
     if (!older[id]) {
       setPicking(id);
@@ -60,6 +63,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
       setPicking(null);
       if (!r) return toast.error("Couldn't load that read. Try again.");
       setOlder((o) => ({ ...o, [id]: r }));
+      if (seq !== pickSeq.current) return;
     }
     setSelected(id);
   }
@@ -132,6 +136,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
   function run(mode: "auto" | "full") {
     adv.stop();
     adv.clear();
+    pickSeq.current++;
     setSelected(null);
     setBaseline(history[0]?.id);
     submit({ mode });
