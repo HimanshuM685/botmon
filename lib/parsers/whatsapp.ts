@@ -13,10 +13,16 @@ const clean = (s: string) => s.replace(/[‎‏‪-‮]/g, "").replace(/[  ]/
 
 const DAY = 86_400_000;
 
-/** Does this device write dates month-first (en-US) rather than day-first? */
+/**
+ * Does this device write dates month-first (en-US) rather than day-first?
+ * The browser's language alone is not enough: en-US is the default language of many browsers outside the US,
+ * while WhatsApp on the phone writes day-first. So month-first also needs a clock in the Americas.
+ * ponytail: language + time zone as a stand-in for the phone's own date format; ask the user if this ever guesses wrong.
+ */
 function localeMonthFirst() {
-  const parts = new Intl.DateTimeFormat().formatToParts(new Date(2000, 0, 2)).map((p) => p.type);
-  return parts.indexOf("month") < parts.indexOf("day");
+  const fmt = new Intl.DateTimeFormat();
+  const parts = fmt.formatToParts(new Date(2000, 0, 2)).map((p) => p.type);
+  return parts.indexOf("month") < parts.indexOf("day") && /^(America|US)\//.test(fmt.resolvedOptions().timeZone ?? "");
 }
 
 /** `monthFirst`: the order to assume when the dates themselves can't tell (defaults to this device's). */
@@ -80,7 +86,11 @@ export function parseWhatsApp(raw: string, now = Date.now(), monthFirst = locale
     const score = (m: Msg[]) => m.filter((x, i) => i > 0 && x.ts < m[i - 1].ts).length;
     const [dm, md] = [build(true), build(false)];
     const [jumpsDm, jumpsMd] = [score(dm), score(md)];
-    messages = jumpsMd < jumpsDm || (jumpsMd === jumpsDm && monthFirst) ? md : dm;
+    // Then: an order that puts messages in the future is wrong. Only then the device's own order.
+    const ahead = (m: Msg[]) => m.some((x) => x.ts > now + DAY);
+    const [futureDm, futureMd] = [ahead(dm), ahead(md)];
+    const useMd = jumpsMd !== jumpsDm ? jumpsMd < jumpsDm : futureDm !== futureMd ? futureDm : monthFirst;
+    messages = useMd ? md : dm;
   }
 
   return { source: "WHATSAPP", messages, senders: sendersOf(messages) };

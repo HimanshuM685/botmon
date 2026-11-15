@@ -157,3 +157,13 @@ it("the coach finds the cheese link: remember writes triples, recall and connect
   expect(link).toContain("cheese —IS_A→ milk product");
   expect(String(await run(tools.connect, { a: "cheese", b: "cricket" }))).toBe("Not in memory: cricket.");
 });
+
+it("recall on the person's own name lists what hangs off them", async () => {
+  const { coachTools } = await import("./coach");
+  const facts = [{ id: "a", kind: "PREFERENCE", text: "Loves filter coffee", happenedAt: null, entities: ["filter coffee"] }];
+  const tools = coachTools({ msgs: [], tz: 0, knownFacts: [], facts, saveFact: async () => "new", personName: "Riya Sharma" });
+  const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
+  const out = String(await run(tools.recall, { about: "Riya" }));
+  expect(out).toContain("filter coffee");
+  expect(out).not.toContain("No links yet");
+});

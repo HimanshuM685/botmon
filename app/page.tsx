@@ -79,7 +79,7 @@ export default async function Landing() {
           </p>
         </div>
         <ul className="space-y-3 text-sm">
-          {["Bring your own key: Gemini (free), Groq (free), OpenAI, Grok or NVIDIA NIM", "A coach for each person that remembers what you tell it", "Advice that respects boundaries. No manipulation tricks.", "Export everything, delete anything (30-day undo)"].map((t) => (
+          {["Bring your own key: Gemini (free), Groq (free), OpenAI, Grok, NVIDIA NIM or OpenRouter", "A coach for each person that remembers what you tell it", "Advice that respects boundaries. No manipulation tricks.", "Export everything, delete anything (30-day undo)"].map((t) => (
             <li key={t} className="card flex items-center gap-3 px-5 py-4">
               <span className="size-2 shrink-0 rounded-full bg-mint" />
               {t}

@@ -17,6 +17,8 @@ export function getModel(provider: ProviderId, apiKey: string, model: string) {
       return createGroq({ apiKey })(model);
     case "NIM":
       return createOpenAI({ apiKey, baseURL: "https://integrate.api.nvidia.com/v1" }).chat(model);
+    case "OPENROUTER":
+      return createOpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1" }).chat(model);
   }
 }
 

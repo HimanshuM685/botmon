@@ -113,3 +113,22 @@ describe("stats", () => {
     expect(w.daysSinceLast).toBe(119);
   });
 });
+
+it("ambiguous day/month: the order that lands in the future loses, whatever the device's order", async () => {
+  const { parseWhatsApp } = await import("./whatsapp");
+  const now = new Date(2026, 10, 15).getTime(); // 15 Nov 2026
+  // 05/11/26 is 5 Nov (past) day-first, 11 May... also past: still the device's call.
+  // 10/12/26 is 10 Dec (future) day-first, 12 Oct (past) month-first: month-first wins even on a day-first device.
+  const text = Array.from({ length: 3 }, (_, i) => `10/12/26, 9:4${i} pm - Riya: hi ${i}`).join("\n");
+  expect(new Date(parseWhatsApp(text, now, false).messages[0].ts).getMonth()).toBe(9);
+  const past = Array.from({ length: 3 }, (_, i) => `05/11/26, 9:4${i} pm - Riya: hi ${i}`).join("\n");
+  expect(new Date(parseWhatsApp(past, now, false).messages[0].ts).getMonth()).toBe(10);
+  expect(new Date(parseWhatsApp(past, now, true).messages[0].ts).getMonth()).toBe(4);
+});
+
+it("a key fact without feeling, valence or triples still parses", async () => {
+  const { analysisSchema } = await import("../ai/schema");
+  const fact = analysisSchema.shape.keyFacts.element;
+  const r = fact.safeParse({ fact: "Has a sister", category: "family", when: "", about: ["sister"], triples: [{ from: "them" }] });
+  expect(r.success && r.data).toMatchObject({ feeling: "", valence: 0, triples: [] });
+});

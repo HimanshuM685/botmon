@@ -1,8 +1,8 @@
 "use server";
 
 import { generateText } from "ai";
-import { toEntities, toFeeling, toValence } from "@/lib/facts";
-import { retagMemory, saveMemories } from "@/lib/graph-store";
+import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@/lib/facts";
+import { pruneGraph, retagMemory, saveMemories } from "@/lib/graph-store";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -11,7 +11,7 @@ import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { MAX_PEOPLE, getPerson } from "@/lib/data";
 import { alive } from "@/lib/trash";
-import { PROVIDER_IDS, type ProviderId } from "@/lib/ai/models";
+import { MODELS_URL, parseModelList, PROVIDER_IDS, type ProviderId } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { RELATIONS } from "@/lib/ai/prompt";
 import type { Analysis } from "@/lib/ai/schema";
@@ -59,6 +59,29 @@ const keySchema = z.object({
   apiKey: z.string().trim().min(10, "That key looks too short").max(500),
   model: z.string().trim().min(1).max(120),
 });
+
+/**
+ * The chat models a key can use, asked from the provider itself. Goes through the server because most providers
+ * don't allow this call from a browser. The key is used for this one request and not stored or logged here.
+ */
+export async function listModels(providerInput: string, apiKeyInput: string): Promise<{ models?: string[]; error?: string }> {
+  await requireUser();
+  const parsed = keySchema.omit({ model: true }).safeParse({ provider: providerInput, apiKey: apiKeyInput });
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { provider, apiKey } = parsed.data;
+  try {
+    const res = await fetch(MODELS_URL[provider], {
+      headers: provider === "GEMINI" ? { "x-goog-api-key": apiKey } : { authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+      cache: "no-store",
+    });
+    if (!res.ok) return { error: providerError({ statusCode: res.status, message: `HTTP ${res.status}` }) };
+    const models = parseModelList(provider, await res.json());
+    return models.length ? { models } : { error: "This key has no chat models available." };
+  } catch {
+    return { error: "Couldn't reach the provider to list models. You can still type a model name." };
+  }
+}
 
 export async function saveKey(_: ActionState, form: FormData): Promise<ActionState> {
   const user = await requireUser();
@@ -187,16 +210,21 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
   }
   if (kind.data === "chat") {
     // Only one live chat per person: restoring an old chat sends the current one to the trash, and remembers it.
-    const [back, current] = await Promise.all([
+    const [back, current, person] = await Promise.all([
       db.chatUpload.findUniqueOrThrow({ where: { id }, select: { deletedAt: true } }),
-      db.chatUpload.findFirst({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, select: { id: true } }),
+      db.chatUpload.findFirst({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, select: { id: true, replacedId: true } }),
+      db.person.findUniqueOrThrow({ where: { id: item.personId }, select: { id: true, name: true } }),
     ]);
+    // Removed as a wrong chat earlier: the reads that went with it at the same moment return with it.
+    const again = back.deletedAt ? await reattachChat(id, item.personId, back.deletedAt) : { queries: [], reads: [] };
     await db.$transaction([
       db.chatUpload.updateMany({ where: { personId: item.personId, deletedAt: null, NOT: { id } }, data: { deletedAt: new Date() } }),
-      db.chatUpload.update({ where: { id }, data: { deletedAt: null, replacedId: current?.id ?? null } }),
-      // Removed as a wrong chat earlier: its reads and their memories went with it at the same moment, so they return with it.
-      ...(back.deletedAt ? await reattachChat(id, item.personId, back.deletedAt) : []),
+      // If the current chat is the one that replaced this one, restoring is undoing that upload: this chat keeps what
+      // it replaced itself. Pointing the two at each other would make each removal bring the other back, forever.
+      db.chatUpload.update({ where: { id }, data: { deletedAt: null, ...(current?.replacedId === id ? {} : { replacedId: current?.id ?? null }) } }),
+      ...again.queries,
     ]);
+    await rebuildMemories(person, again.reads);
   } else if (kind.data !== "person") await setDeleted(kind.data, id, null);
 
   revalidatePath("/", "layout");
@@ -213,20 +241,36 @@ function ownedChat(userId: string, chatId: string): Promise<OwnedChat | null> {
 
 /**
  * The reverse of detachChat, for a chat coming back to a person (moved back, or restored from the trash):
- * the reads made from it there and the memories they extracted return. Only what detachChat trashed together,
- * recognised by its shared timestamp `at`; reads the user deleted one by one stay deleted.
+ * the reads made from it there return. Only what detachChat trashed together, recognised by its shared
+ * timestamp `at`; reads the user deleted one by one stay deleted.
+ * Their memories were erased by detachChat, so the caller rebuilds them from the returned reads (rebuildMemories).
  * ponytail: without `at` (a move back) the latest trashed batch is taken; if the chat left with no live reads,
  * that can be one read the user deleted by hand. Store a detach stamp on the chat if that ever matters.
  */
 async function reattachChat(chatId: string, personId: string, at?: Date) {
   const stamp = at ?? (await db.analysis.findFirst({ where: { chatId, personId, deletedAt: { not: null } }, orderBy: { deletedAt: "desc" }, select: { deletedAt: true } }))?.deletedAt;
-  if (!stamp) return [];
+  if (!stamp) return { queries: [], reads: [] as string[] };
   const reads = (await db.analysis.findMany({ where: { chatId, personId, deletedAt: stamp }, select: { id: true } })).map((r) => r.id);
-  if (!reads.length) return [];
-  return [
-    db.analysis.updateMany({ where: { id: { in: reads } }, data: { deletedAt: null } }),
-    db.personFact.updateMany({ where: { personId, source: "ANALYSIS", analysisId: { in: reads }, deletedAt: stamp }, data: { deletedAt: null } }),
-  ];
+  return { queries: reads.length ? [db.analysis.updateMany({ where: { id: { in: reads } }, data: { deletedAt: null } })] : [], reads };
+}
+
+/**
+ * Put back the memories of reads that just returned: taken again from what each read found (oldest read first),
+ * skipping anything already on the timeline or deleted by the user, and tied into the graph.
+ */
+async function rebuildMemories(person: { id: string; name: string }, readIds: string[]) {
+  if (!readIds.length) return;
+  const [reads, existing] = await Promise.all([
+    db.analysis.findMany({ where: { id: { in: readIds }, deletedAt: undefined }, orderBy: { createdAt: "asc" }, select: { id: true, result: true } }),
+    db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, select: { text: true } }),
+  ]);
+  const known = existing.map((f) => f.text);
+  for (const r of reads) {
+    if (!r.result) continue;
+    const fresh = newFacts(known, factsFromAnalysis(r.result as unknown as Analysis));
+    await saveMemories(person, fresh, { source: "ANALYSIS", analysisId: r.id });
+    known.push(...fresh.map((f) => f.text));
+  }
 }
 
 /**
@@ -237,15 +281,15 @@ async function reattachChat(chatId: string, personId: string, at?: Date) {
  * A read still streaming is handled on its side: it re-checks the chat before saving anything (analyze route).
  */
 async function detachChat(chat: OwnedChat, now: Date) {
-  const reads = (await db.analysis.findMany({ where: { chatId: chat.id, ...alive }, select: { id: true } })).map((r) => r.id);
+  // Every read of this chat on this person, deleted ones too: deleting a read keeps its memories on the timeline,
+  // and those are just as wrong here.
+  const reads = (await db.analysis.findMany({ where: { chatId: chat.id, personId: chat.personId, deletedAt: undefined }, select: { id: true } })).map((r) => r.id);
   return [
-    db.analysis.updateMany({ where: { id: { in: reads } }, data: { deletedAt: now } }),
+    db.analysis.updateMany({ where: { id: { in: reads }, deletedAt: null }, data: { deletedAt: now } }),
     db.personFact.deleteMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads } } }),
-    // Chats saved before `replacedId` existed: the replaced one was trashed at exactly this chat's createdAt.
-    db.chatUpload.updateMany({
-      where: chat.replacedId ? { id: chat.replacedId, personId: chat.personId, deletedAt: { not: null } } : { personId: chat.personId, deletedAt: chat.createdAt },
-      data: { deletedAt: null },
-    }),
+    ...(chat.replacedId ? [db.chatUpload.updateMany({ where: { id: chat.replacedId, personId: chat.personId, deletedAt: { not: null } }, data: { deletedAt: null } })] : []),
+    // Nothing on this person may keep pointing at the chat that left, or removing that one later would bring this one back.
+    db.chatUpload.updateMany({ where: { personId: chat.personId, replacedId: chat.id }, data: { replacedId: null } }),
   ];
 }
 
@@ -255,6 +299,8 @@ export async function removeChat(chatId: string): Promise<ActionState> {
   if (!chat) return { error: "Not found" };
   const now = new Date();
   await db.$transaction([db.chatUpload.update({ where: { id: chat.id }, data: { deletedAt: now } }), ...(await detachChat(chat, now))]);
+  // The erased memories' people and topics leave the graph too.
+  await pruneGraph(chat.personId);
   revalidatePath("/", "layout");
   return { ok: true };
 }
@@ -265,14 +311,16 @@ export async function moveChat(chatId: string, toPersonId: string): Promise<Acti
   if (!chat || !to || to.id === chat.personId) return { error: "Not found" };
   const now = new Date();
   const theirs = await db.chatUpload.findFirst({ where: { personId: to.id, deletedAt: null }, select: { id: true } });
+  // Moved back to a person it was on before: the reads made from it there return, and their memories are rebuilt.
+  const again = await reattachChat(chat.id, to.id);
   await db.$transaction([
     ...(await detachChat(chat, now)),
     db.chatUpload.updateMany({ where: { personId: to.id, deletedAt: null }, data: { deletedAt: now } }),
     // Removing it from the new person brings back the chat it replaced there.
     db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, replacedId: theirs?.id ?? null } }),
-    // Moved back to a person it was on before: the reads made from it there, and their memories, return.
-    ...(await reattachChat(chat.id, to.id)),
+    ...again.queries,
   ]);
+  await Promise.all([pruneGraph(chat.personId), rebuildMemories(to, again.reads)]);
   revalidatePath("/", "layout");
   return { ok: true };
 }

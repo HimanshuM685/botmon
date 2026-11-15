@@ -22,13 +22,15 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
   const input = useRef<HTMLInputElement>(null);
   // Uncontrolled: a long chat pasted on a phone shouldn't re-render the page on every change.
   const box = useRef<HTMLTextAreaElement>(null);
+  // The box unmounts while the "which one is you" step shows; this puts the text back when the user goes Back.
+  const [kept, setKept] = useState("");
   const router = useRouter();
 
   // On a phone, pasting is the main way in: show the box without an extra tap. A ref callback, so it runs
   // each time the box appears (after "Add newer export", after Back), not only on first render.
   const openOnPhone = useCallback((el: HTMLDetailsElement | null) => {
-    if (el && matchMedia("(hover: none)").matches) el.open = true;
-  }, []);
+    if (el && (kept || matchMedia("(hover: none)").matches)) el.open = true;
+  }, [kept]);
 
   /** `pasted`: the text the chat was read from, when it came from the paste box. */
   function accept(c: ParsedChat, pasted?: string) {
@@ -59,6 +61,7 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
   function readPasted() {
     const text = box.current?.value ?? "";
     if (!text.trim()) return toast.error("Paste your WhatsApp messages in the box first.");
+    setKept(text);
     accept({ ...parseWhatsApp(text), source: "PASTE" }, text);
   }
 
@@ -159,7 +162,7 @@ export function ChatUploader({ personId, personName, existing }: { personId: str
             <label className="sr-only" htmlFor="paste-box">WhatsApp text</label>
             {/* 16px on phones: smaller text makes iOS zoom the page when the box is focused. */}
             <textarea
-              id="paste-box" ref={box} rows={6} autoCapitalize="off" autoCorrect="off" spellCheck={false}
+              id="paste-box" ref={box} rows={6} defaultValue={kept} autoCapitalize="off" autoCorrect="off" spellCheck={false}
               className="input mt-3 h-auto py-3 font-mono text-base sm:text-xs"
               placeholder={"[14/11, 9:41 pm] Riya: hey\n14/11/26, 9:42 pm - You: hi"}
             />

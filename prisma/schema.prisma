@@ -13,6 +13,7 @@ enum Provider {
   GROK
   GROQ
   NIM
+  OPENROUTER
 }
 
 enum FactKind {

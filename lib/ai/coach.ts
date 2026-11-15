@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Msg } from "@/lib/parsers/types";
 import { activityWindows, toLocal, type ChatStats } from "@/lib/stats";
 import { factsForPrompt, normalizeEntity, normalizeFact, toDate, toEntities, toFeeling, toValence, type FactInput } from "@/lib/facts";
-import { buildGraph, planMemory, type GEdge, type GNode } from "@/lib/graph";
+import { buildGraph, ME, planMemory, THEM, type GEdge, type GNode } from "@/lib/graph";
 import { fitToBudget, RELATIONS, type RelationId } from "./prompt";
 import { tripleSchema } from "./schema";
 
@@ -239,9 +239,12 @@ export function coachTools(deps: {
         const g = graph();
         const node = g.resolve(about);
         if (node) {
-          const all = g.neighbours([node.id], 1, 400);
+          // The person (or the user) themself: every memory hangs off them, and walks never go through the two hubs,
+          // so take their own edges directly and stop there.
+          const self = node.key === THEM || node.key === ME;
+          const all = self ? g.edges.filter((e) => e.fromId === node.id || e.toId === node.id) : g.neighbours([node.id], 1, 400);
           const direct = g.newest(all, RECALL_MAX);
-          const further = g.newest(g.neighbours([node.id], 2, 400).filter((e) => !all.includes(e)), 15);
+          const further = self ? [] : g.newest(g.neighbours([node.id], 2, 400).filter((e) => !all.includes(e)), 15);
           const found = g.tensions([node.id], 8, true);
           return [
             `${g.name(node.id)}${node.aliases.length ? ` (also: ${node.aliases.join(", ")})` : ""}`,

@@ -1,4 +1,4 @@
-import { normalizeEntity } from "./facts";
+import { MAX_TAGS, normalizeEntity } from "./facts";
 
 /**
  * The memory graph: people, places and things as nodes, typed directed edges between them, each edge backed
@@ -95,7 +95,26 @@ export function planMemory(
     const them = node(THEM, THEM);
     if (!has(them.id, n.id, "MENTIONS", item.factId)) addEdges.push({ id: newId(), fromId: them.id, toId: n.id, rel: "MENTIONS", label: null, factId: item.factId });
   }
-  return { nodes: addNodes, edges: addEdges, entities: [...touched].slice(0, 8) };
+  return { nodes: addNodes, edges: addEdges, entities: [...touched].slice(0, MAX_TAGS) };
+}
+
+/**
+ * Nodes nothing stands behind any more: no memory-backed edge of their own, and no chain of knowledge edges
+ * (IS_A / PART_OF) to a node that has one. "milk product" stays while a memory about cheese exists; the names a
+ * removed chat brought in go once its memories are erased. The two hubs are never returned.
+ */
+export function ungrounded(nodes: GNode[], edges: GEdge[]): string[] {
+  const grounded = new Set(edges.filter((e) => e.factId).flatMap((e) => [e.fromId, e.toId]));
+  const knowledge = edges.filter((e) => !e.factId);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const e of knowledge)
+      if (grounded.has(e.fromId) !== grounded.has(e.toId)) {
+        grounded.add(e.fromId).add(e.toId);
+        grew = true;
+      }
+  }
+  return nodes.filter((n) => !HUBS.has(n.key) && !grounded.has(n.id)).map((n) => n.id);
 }
 
 export type Tension = { kind: "cost" | "mixed" | "risk"; text: string };

@@ -221,6 +221,8 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
           )}
         </div>
       )}
+      {/* No read yet: the chat's own numbers need no AI, so they show straight away. */}
+      {!shown && !isLoading && !!chatNumbers?.length && <div className="card p-6 sm:p-8"><Numbers items={chatNumbers} /></div>}
       {isLoading && !object?.status && <div className="card h-48 animate-pulse" aria-busy />}
       {shown && <Report a={shown} live={isLoading} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} />}
     </section>
@@ -368,19 +370,7 @@ function Report({ a, live, advice, personId, chatNumbers }: { a: DeepPartial<Ana
               })}
             </ul>
           )}
-          {!!chatNumbers?.length && (
-            <Block title="From the chat itself">
-              <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                {chatNumbers.map((n) => (
-                  <div key={n.label}>
-                    <dt className="text-xs text-muted">{n.label}</dt>
-                    <dd className="display mt-1 text-2xl">{n.value}</dd>
-                    <dd className="text-xs text-dim">{n.hint}</dd>
-                  </div>
-                ))}
-              </dl>
-            </Block>
-          )}
+          {!!chatNumbers?.length && <Block title="From the chat itself"><Numbers items={chatNumbers} /></Block>}
         </Fold>
       )}
 
@@ -493,6 +483,21 @@ function Report({ a, live, advice, personId, chatNumbers }: { a: DeepPartial<Ana
         </Fold>
       )}
     </div>
+  );
+}
+
+/** The numbers counted from the chat itself: who starts, the split, reply times, recent activity. */
+function Numbers({ items }: { items: ChatNumber[] }) {
+  return (
+    <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      {items.map((n) => (
+        <div key={n.label}>
+          <dt className="text-xs text-muted">{n.label}</dt>
+          <dd className="display mt-1 text-2xl">{n.value}</dd>
+          <dd className="text-xs text-dim">{n.hint}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

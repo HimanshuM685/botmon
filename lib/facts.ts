@@ -28,15 +28,21 @@ const felt = (feeling: string | null | undefined, valence: unknown) => {
   return { feeling: f, valence: toValence(valence, f) };
 };
 
+/**
+ * Most tags a memory carries. One number for what a form or model may give (toEntities) and what the graph caches
+ * on the fact (planMemory): if the cache held more than an edit can send back, saving an edit would drop links.
+ */
+export const MAX_TAGS = 8;
+
 /** One spelling per entity so memories connect: "Sister Riya!" and "sister  riya" are the same node. */
 export const normalizeEntity = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().slice(0, 40);
 
 /**
- * Clean tag list for a memory: normalised, de-duplicated, at most 6.
+ * Clean tag list for a memory: normalised, de-duplicated, at most MAX_TAGS.
  * ponytail: exact match after normalising ("sis riya" and "sister riya" stay separate); embeddings would merge those.
  */
 export function toEntities(tags: (string | undefined)[] | undefined): string[] {
-  return [...new Set((tags ?? []).map((t) => normalizeEntity(t ?? "")).filter((t) => t.length > 1))].slice(0, 6);
+  return [...new Set((tags ?? []).map((t) => normalizeEntity(t ?? "")).filter((t) => t.length > 1))].slice(0, MAX_TAGS);
 }
 
 /** Same fact said slightly differently ("Loves  coffee." vs "loves coffee") counts as one. */

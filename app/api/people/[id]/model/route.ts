@@ -62,6 +62,11 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
   const emotion = emotionMap(facts); // shares the memory budget below
   const graph = await loadGraph(person, facts);
+  // The graph around what changed, plus what the links show overall.
+  const graphBrief = graph.brief(added.flatMap((f) => f.entities).flatMap((k) => graph.resolve(k)?.id ?? [])).slice(0, 8_000);
+  const known = graph.known();
+  // Memory, emotion map, graph and names share one slice of the prompt.
+  const memoryBudget = Math.max(2_000, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE) - emotion.length - graphBrief.length - known.join(", ").length);
   const base = {
     voice: voice ? voiceForPrompt(voice) : undefined,
     personName: person.name,
@@ -72,11 +77,10 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     theirName: chat?.theirName,
     stats: chat ? await getChatStats(chat) : null,
     tzOffsetMin: chat?.tzOffset ?? 0,
-    facts: factsWithinBudget(facts, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE) - emotion.length, added.flatMap((f) => f.entities)).facts,
+    facts: factsWithinBudget(facts, memoryBudget, added.flatMap((f) => f.entities)).facts,
     emotion,
-    // The graph around what changed, plus what the links show overall.
-    graph: graph.brief(added.flatMap((f) => f.entities).flatMap((k) => graph.resolve(k)?.id ?? [])).slice(0, 8_000),
-    known: graph.known(),
+    graph: graphBrief,
+    known,
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,

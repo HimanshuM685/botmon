@@ -10,7 +10,7 @@ import { seedFor, streamResponse } from "@/lib/ai/stream";
 import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
-import { linkMemories, loadGraph, saveMemories } from "@/lib/graph-store";
+import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
 
 export const maxDuration = 300;
@@ -142,24 +142,32 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           // updatedAt kept: a backfill is not an edit, so it neither looks like one next time nor counts as new information.
           data: { ...(tags ? { entities: now!.entities } : {}), ...(felt ? { feeling: now!.feeling, valence: now!.valence } : {}), updatedAt: f.updatedAt },
         })));
-      // Memories already on the timeline gain the edges this read states for the same fact (the store skips ones they have).
-      const storedId = new Map(facts.map((f) => [normalizeFact(f.text), f.id]));
-      await linkMemories(person, found.flatMap((f) => {
-        const factId = storedId.get(normalizeFact(f.text));
-        return factId && f.triples?.length ? [{ factId, triples: f.triples }] : [];
-      }));
-      // Memories that just got their tags join the graph with them.
-      await linkMemories(person, backfill.filter((b) => b.tags).map(({ f, now }) => ({ factId: f.id, tags: now!.entities, triples: now!.triples })));
+      // Never-edited memories already on the timeline join the graph with what this read states for the same fact:
+      // its edges, and the tags they just got (the store skips edges they already have). One call, one graph load.
+      // Edited ones are left alone here too: a tag the user removed must not come back as an edge.
+      const gotTags = new Set(backfill.filter((b) => b.tags).map((b) => b.f.id));
+      const relink = facts.flatMap((f) => {
+        const now = again.get(normalizeFact(f.text));
+        if (!now || !untouched(f) || !(now.triples?.length || gotTags.has(f.id))) return [];
+        return [{ f, tags: gotTags.has(f.id) ? now.entities : f.entities, triples: now.triples }];
+      }).slice(0, 200);
+      const linked = await linkMemories(person, relink.map(({ f, tags, triples }) => ({ factId: f.id, tags, triples })));
+      // The tag list cached on each memory follows the graph, as for new memories (saveMemories).
+      const retag = relink.filter(({ f, tags }) => (linked.get(f.id) ?? tags).join("|") !== tags.join("|"));
+      if (retag.length)
+        await db.$transaction(retag.map(({ f }) => db.personFact.update({ where: { id: f.id }, data: { entities: linked.get(f.id)!, updatedAt: f.updatedAt } })));
       // Fingerprint after the new facts land, so the read's own facts don't make its advice look stale.
       const contextHash = await currentContextHash(person);
       await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash, adviceAt: new Date() } });
-      // The chat left while the lines above were saving (after the check at the top): take this run's memories off the timeline too.
+      // The chat left while the lines above were saving (after the check at the top): take this run's memories off the
+      // timeline too. Erased, not trashed, for the same reason as detachChat (app/actions.ts): a trashed memory tells
+      // the AI the user said it is no longer true.
       if (!(await chatStillHere())) {
-        const at = new Date();
         await db.$transaction([
-          db.personFact.updateMany({ where: { analysisId: run.id, deletedAt: null }, data: { deletedAt: at } }),
-          db.analysis.updateMany({ where: { id: run.id, deletedAt: null }, data: { deletedAt: at } }),
+          db.personFact.deleteMany({ where: { personId: person.id, source: "ANALYSIS", analysisId: run.id } }),
+          db.analysis.updateMany({ where: { id: run.id, deletedAt: null }, data: { deletedAt: new Date() } }),
         ]);
+        await pruneGraph(person.id);
       }
     },
   });

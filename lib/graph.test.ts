@@ -75,3 +75,18 @@ it("broad categories don't relate everything; walks never pass through the perso
   expect(g.tensions()).toEqual([]); // seven foods under "food": too broad to mean anything
   expect(g.path(g.resolve("sushi")!.id, g.resolve("peanuts")!.id)!.length).toBe(2); // via food, not via her
 });
+
+it("ungrounded: names a removed chat left behind go; a category linked to a live memory stays", async () => {
+  const { ungrounded } = await import("./graph");
+  const n = (id: string, key = id) => ({ id, key, label: key, kind: "thing", aliases: [] });
+  const e = (fromId: string, toId: string, rel: string, factId: string | null) => ({ id: `${fromId}-${toId}`, fromId, toId, rel, label: null, factId });
+  const nodes = [n("t", "them"), n("cheese"), n("milk product"), n("dairy"), n("stranger"), n("stranger kind")];
+  const edges = [
+    e("t", "cheese", "LIKES", "f1"), // a live memory
+    e("cheese", "milk product", "IS_A", null),
+    e("milk product", "dairy", "IS_A", null),
+    e("stranger", "stranger kind", "IS_A", null), // left by erased memories
+  ];
+  expect(ungrounded(nodes, edges).sort()).toEqual(["stranger", "stranger kind"]);
+  expect(ungrounded(nodes, []).sort()).toEqual(["cheese", "dairy", "milk product", "stranger", "stranger kind"].sort());
+});

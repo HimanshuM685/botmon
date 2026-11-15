@@ -1,7 +1,7 @@
 import "server-only";
 import { db } from "./db";
 import type { FactInput } from "./facts";
-import { buildGraph, planMemory, type GEdge, type GFact, type GNode, type Triple } from "./graph";
+import { buildGraph, planMemory, ungrounded, type GEdge, type GFact, type GNode, type Triple } from "./graph";
 
 type Person = { id: string; name: string };
 export type MemoryInput = FactInput & { triples?: Triple[] };
@@ -53,6 +53,13 @@ export async function linkMemories(person: Person, items: { factId: string; tags
   }
   if (first.addEdges.length) await db.memoryEdge.createMany({ data: first.addEdges.map((e) => ({ ...e, personId: person.id })) });
   return first.entities;
+}
+
+/** After memories were erased (a wrong chat removed): drop the nodes nothing stands behind any more, with their edges. */
+export async function pruneGraph(personId: string) {
+  const { nodes, edges } = await loadGraphRows(personId);
+  const gone = ungrounded(nodes, edges);
+  if (gone.length) await db.memoryNode.deleteMany({ where: { personId, id: { in: gone } } });
 }
 
 /** Save new memories and tie them into the graph. Returns their ids, in order. */
