@@ -21,6 +21,7 @@ export async function GET() {
       nodes: { orderBy: { createdAt: "asc" } },
       edges: { orderBy: { createdAt: "asc" } },
       findings: { orderBy: { firstSeenAt: "asc" } },
+      goals: { orderBy: { createdAt: "asc" } },
     },
   });
   const data = await Promise.all(

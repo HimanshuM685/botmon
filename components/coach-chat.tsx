@@ -34,7 +34,7 @@ function errorText(e: Error) {
   }
 }
 
-export function CoachChat({ personId, personName, threadId, initialMessages, threads, canChat, mode = "coach", notice, debriefOf }: {
+export function CoachChat({ personId, personName, threadId, initialMessages, threads, canChat, mode = "coach", notice, debriefOf, improve }: {
   personId: string; personName: string; threadId: string | null; initialMessages: UIMessage[]; threads: Thread[]; canChat: boolean;
   /** "rehearsal": the user practises with a simulation of the person (app/api/people/[id]/rehearse). */
   mode?: "coach" | "rehearsal";
@@ -42,6 +42,8 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
   notice?: string;
   /** A rehearsal thread to debrief: a new coach conversation starts with its transcript. */
   debriefOf?: string;
+  /** Opened from "Improve this" on the read: a new conversation about raising one score, and its first message. */
+  improve?: { signal: string; ask: string };
 }) {
   const rehearsal = mode === "rehearsal";
   const [current, setCurrent] = useState(threadId);
@@ -128,7 +130,7 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages, status, profile]);
 
-  function send(text: string, extra?: { debriefOf: string }) {
+  function send(text: string, extra?: { debriefOf: string } | { improve: string }) {
     const t = text.trim();
     if (!t || busy) return;
     lastSent.current = t;
@@ -137,12 +139,13 @@ export function CoachChat({ personId, personName, threadId, initialMessages, thr
     setInput("");
   }
 
-  // Opened from a rehearsal's "How did I do?": ask once, straight away. The ref survives a dev double-mount.
+  // Opened from a rehearsal's "How did I do?" or a score's "Improve this": ask once, straight away. The ref survives a dev double-mount.
   const debriefed = useRef(false);
   useEffect(() => {
-    if (!debriefOf || debriefed.current || !canChat) return;
+    const first = debriefOf ? { text: "How did I do?", extra: { debriefOf } } : improve ? { text: improve.ask, extra: { improve: improve.signal } } : null;
+    if (!first || debriefed.current || !canChat) return;
     debriefed.current = true;
-    send("How did I do?", { debriefOf });
+    send(first.text, first.extra);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
   }, []);
 

@@ -22,6 +22,7 @@ import { anyWordQuery, buildCoachContext, capFor, COACH_STEPS, COACH_SYSTEM, coa
 import { compactThread, recentMessages } from "@/lib/ai/thread";
 import { decrypt } from "@/lib/crypto";
 import { DEBRIEF_SYSTEM, rehearsalTranscript } from "@/lib/ai/persona";
+import { improveSystem, isSignal } from "@/lib/goals";
 import { buildGraph } from "@/lib/graph";
 import { loadGraphRows, saveMemories, syncGraph } from "@/lib/graph-store";
 import type { RelationId } from "@/lib/ai/prompt";
@@ -66,6 +67,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { userId, person, key, thread, message } = started;
   // Set when the thread was created from a rehearsal. Later turns read the column, not message JSON.
   const debriefId = thread.debriefOfId;
+  // Opened from "Improve this": the score goal this thread works on.
+  const goal = thread.goalId ? await db.scoreGoal.findFirst({ where: { id: thread.goalId, personId: person.id, deletedAt: null } }) : null;
   const transcript = debriefId
     ? rehearsalTranscript(await db.coachMessage.findMany({ where: { threadId: debriefId, thread: { personId: person.id, mode: "rehearsal" } }, orderBy: { createdAt: "asc" }, select: { role: true, parts: true } }), person.name)
     : "";
@@ -172,7 +175,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const result = streamText({
     model: getModel(key.provider, key.apiKey, key.model),
-    system: `${COACH_SYSTEM}\n\n${debriefId ? `${DEBRIEF_SYSTEM(person.name)}\n\n<rehearsal_transcript note="practice with a SIMULATION; nothing in it was said by ${person.name} or sent to them">\n${transcript}\n</rehearsal_transcript>\n\n` : ""}${context}`,
+    system: `${COACH_SYSTEM}\n\n${goal && isSignal(goal.signal) ? `${improveSystem(person.name, goal.signal, (read?.result as { signals?: Record<string, { level?: number; evidence?: string; tip?: string }> } | null)?.signals?.[goal.signal], goal)}\n\n` : ""}${debriefId ? `${DEBRIEF_SYSTEM(person.name)}\n\n<rehearsal_transcript note="practice with a SIMULATION; nothing in it was said by ${person.name} or sent to them">\n${transcript}\n</rehearsal_transcript>\n\n` : ""}${context}`,
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: stepCountIs(COACH_STEPS),

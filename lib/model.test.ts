@@ -3,7 +3,7 @@ import { applyPatch, changedSince, enoughMemory } from "./model";
 import { computeScore } from "./stats";
 import type { Analysis, ModelPatch } from "./ai/schema";
 
-const lvl = (level: number) => ({ level, evidence: "x" });
+const lvl = (level: number) => ({ level, evidence: "x", tip: "" });
 const signals = (n: number) => ({ reciprocity: lvl(n), warmth: lvl(n), selfDisclosure: lvl(n), curiosityAboutUser: lvl(n), futureTalk: lvl(n), effort: lvl(n), consistency: lvl(n) });
 const read = {
   status: { label: "Warm", trend: "steady", confidence: "low", explanation: "old", score: 50 },

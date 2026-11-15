@@ -4,6 +4,7 @@ import { PROVIDERS } from "@/lib/ai/models";
 import { deleteKey, setDefaultProvider } from "@/app/actions";
 import { DeleteAccountButton } from "@/components/delete-account-button";
 import { KeyForm } from "@/components/key-form";
+import { KeyModel } from "@/components/key-model";
 import { ConfirmButton } from "@/components/confirm-button";
 
 export const metadata = { title: "Settings" };
@@ -34,6 +35,7 @@ export default async function Settings() {
                   </p>
                   <p className="font-mono text-xs text-dim">{k.model} · ••••{k.last4}</p>
                 </div>
+                <KeyModel provider={k.provider} model={k.model} />
                 {k.provider !== active && (
                   <form action={setDefaultProvider.bind(null, k.provider)}>
                     <button className="btn-ghost h-9 px-4">Use this</button>
