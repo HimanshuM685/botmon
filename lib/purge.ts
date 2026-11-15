@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "./db";
 import { purgeCutoff } from "./trash";
 import { pruneGraph } from "./graph-store";
-import { recountTraits } from "./self/store";
+import { selfChanged } from "./self/store";
 
 /** Permanently delete everything that has been in the trash for more than 30 days (run by hand: `npm run purge`). */
 export async function purgeExpired({ now = Date.now() }: { now?: number } = {}) {
@@ -26,8 +26,9 @@ export async function purgeExpired({ now = Date.now() }: { now?: number } = {}) 
     db.person.deleteMany({ where: { deletedAt: old } }), // children cascade, the evidence of the user's traits too
     db.selfTrait.deleteMany({ where: { deletedAt: old } }), // traits the user hid
   ]);
-  // Evidence-less relation traits go; global ones stay as plain text, flagged (lib/self/traits.ts rescope).
-  for (const userId of recount) await recountTraits(userId).catch((e) => console.error("purge: traits not recounted", userId, (e as Error).message));
+  // Evidence-less relation traits go; global ones stay as plain text, flagged (lib/self/traits.ts rescope). The merged
+  // voice drops the purged chats' sample messages.
+  for (const userId of recount) await selfChanged(userId).catch((e) => console.error("purge: traits not recounted", userId, (e as Error).message));
 
   // Nodes nothing stands behind any more (lib/graph.ts ungrounded); the two hubs always stay.
   let nodes = 0;

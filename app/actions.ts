@@ -5,7 +5,7 @@ import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@
 import { loadUnits } from "@/lib/history-store";
 import { pruneGraph, retagMemory, saveMemories, syncGraph } from "@/lib/graph-store";
 import { scheduleGraphJob } from "@/lib/graph/job";
-import { recountTraits } from "@/lib/self/store";
+import { allNames, selfChanged } from "@/lib/self/store";
 import { toldItem } from "@/lib/self/traits";
 import { SELF_KINDS } from "@/lib/ai/schema";
 import { revalidatePath } from "next/cache";
@@ -56,7 +56,7 @@ export async function deletePerson(id: string, opts: { forgetMe?: boolean } = {}
   // "Forget what this chat taught about me": the user's lines from this person go now, not at purge.
   if (opts.forgetMe) await db.selfEvidence.deleteMany({ where: { personId: id, person: { userId: user.id } } });
   // What this person taught about the user is hidden while they are in the trash (lib/self/traits.ts rescope).
-  await recountTraits(user.id);
+  await selfChanged(user.id);
   revalidatePath("/", "layout");
   return { ok: true }; // the client navigates (components/delete-person-button.tsx)
 }
@@ -264,8 +264,6 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
     if ((await db.person.count({ where: { userId: user.id, ...alive } })) >= MAX_PEOPLE)
       return { error: `You already track ${MAX_PEOPLE} people. Delete one first to restore this.` };
     await db.person.update({ where: { id: item.personId! }, data: { deletedAt: null } });
-    // What this person taught about the user counts again (it was hidden, not deleted).
-    await recountTraits(user.id);
   }
   if (kind.data === "chat" && item.personId) {
     // Only one live chat per person: restoring an old chat sends the current one to the trash, and remembers it.
@@ -286,6 +284,8 @@ export async function restoreItem(kindInput: string, id: string): Promise<Action
     await rebuildMemories(person, again.reads, id);
   } else if (kind.data !== "person") await setDeleted(kind.data, id, null);
   if (kind.data === "fact") await syncGraph({ id: item.personId! });
+  // A person or chat back: what it taught about the user counts again, and its voice rejoins theirs.
+  if (item.personDeleted || kind.data === "chat") await selfChanged(user.id);
 
   revalidatePath("/", "layout");
   return { ok: true };
@@ -371,7 +371,7 @@ export async function removeChat(chatId: string): Promise<ActionState> {
   await db.$transaction([db.chatUpload.update({ where: { id: chat.id }, data: { deletedAt: now } }), ...(await detachChat(chat, now))]);
   // The erased memories' people and topics leave the graph too.
   await pruneGraph(chat.personId);
-  await recountTraits(user.id);
+  await selfChanged(user.id);
   revalidatePath("/", "layout");
   return { ok: true };
 }
@@ -392,7 +392,7 @@ export async function moveChat(chatId: string, toPersonId: string): Promise<Acti
     ...again.queries,
   ]);
   await Promise.all([pruneGraph(chat.personId), rebuildMemories(to, again.reads, chat.id)]);
-  await recountTraits(user.id);
+  await selfChanged(user.id);
   revalidatePath("/", "layout");
   return { ok: true };
 }
@@ -467,8 +467,7 @@ export async function saveTrait(_: ActionState, form: FormData): Promise<ActionS
   const user = await requireUser();
   const parsed = traitSchema.safeParse(Object.fromEntries(form));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
-  const people = await db.person.findMany({ where: { userId: user.id, deletedAt: undefined }, select: { name: true } });
-  const item = toldItem(parsed.data.kind, parsed.data.text, people.map((p) => p.name));
+  const item = toldItem(parsed.data.kind, parsed.data.text, await allNames(user.id));
   if (!item) return { error: "Write something about you, without names" };
   if (parsed.data.id) {
     const res = await db.selfTrait.updateMany({ where: { id: parsed.data.id, userId: user.id, ...alive }, data: { text: item.text, kind: item.kind, edited: true } });

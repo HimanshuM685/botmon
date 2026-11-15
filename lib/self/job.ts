@@ -1,5 +1,4 @@
 import "server-only";
-import { after } from "next/server";
 import { db } from "../db";
 import { getActiveKey } from "../data";
 import { cheapAsk } from "../ai/cheap";
@@ -58,14 +57,10 @@ export async function consolidateSelf(userId: string) {
       ]);
     }
     if (into.size) await recountTraits(userId, [...new Set(into.values())]);
-    const left = into.size ? (await db.selfTrait.findMany({ where: { userId }, select: { id: true, text: true, support: true, source: true, edited: true, pinned: true, noEvidence: true } })).filter(visible) : traits;
+    // Same selection as the hash above (ordered, visible, capped), or the next run would never see it as unchanged.
+    const left = into.size ? (await db.selfTrait.findMany({ where: { userId }, orderBy: [{ support: "desc" }, { lastSeenAt: "desc" }], select: { id: true, text: true, support: true, source: true, edited: true, pinned: true, noEvidence: true } })).filter(visible).slice(0, MAX_SENT) : traits;
     await db.selfProfile.update({ where: { userId }, data: { ...(answer.summary.trim() ? { summary: answer.summary.trim().slice(0, 2_000) } : {}), contextHash: traitsHash(left) } });
   } finally {
     await db.selfProfile.update({ where: { userId }, data: { lockUntil: null } }).catch(() => undefined);
   }
-}
-
-/** Run consolidation once the response has been sent. Call wherever the graph job is scheduled. */
-export function scheduleSelfJob(userId: string) {
-  after(() => consolidateSelf(userId).catch((e) => console.error("self consolidation failed", (e as Error)?.message)));
 }

@@ -14,7 +14,7 @@ import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-s
 import { applyVoice, voiceForPrompt } from "@/lib/voice";
 import { scheduleGraphJob } from "@/lib/graph/job";
 import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
-import { learnFromChat, loadSelf, promoteMeEdges } from "@/lib/self/store";
+import { learnFromChat, loadSelf, promoteMeEdges, recountTraits } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { historyFor } from "@/lib/history-store";
 
@@ -188,8 +188,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await db.$transaction([
           db.personFact.deleteMany({ where: { personId: person.id, source: "ANALYSIS", analysisId: run.id } }),
           db.analysis.updateMany({ where: { id: run.id, deletedAt: null }, data: { deletedAt: new Date() } }),
+          // What this run learned about the user from the chat that left.
+          db.selfEvidence.deleteMany({ where: { personId: person.id, analysisId: run.id } }),
         ]);
         await pruneGraph(person.id);
+        await recountTraits(userId);
       }
     },
   });

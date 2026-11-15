@@ -10,6 +10,8 @@ import { capText, uploadParts } from "@/lib/upload";
 import { removeChat } from "@/app/actions";
 
 type Existing = { myName: string; theirName: string; lastAt: number } | null;
+const looksLike = (sender: string, personName: string) => sender.toLowerCase().includes(personName.toLowerCase().split(" ")[0]);
+const known = (matches: string[]) => (matches.length === 1 ? matches[0] : undefined);
 const fmt = (ts: number) => new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 
 export function ChatUploader({ personId, personName, existing, selfNames = [] }: {
@@ -53,8 +55,9 @@ export function ChatUploader({ personId, personName, existing, selfNames = [] }:
     // sender whose name doesn't look like the person's.
     const guess =
       (existing && c.senders.includes(existing.myName) ? existing.myName : undefined) ??
-      c.senders.find((s) => selfNames.includes(s)) ??
-      c.senders.find((s) => !s.toLowerCase().includes(personName.toLowerCase().split(" ")[0])) ?? c.senders[1] ?? c.senders[0];
+      // Only when it settles it: one sender known as "me", and not the person (a wrong pick once must not stick).
+      known(c.senders.filter((s) => selfNames.includes(s) && !looksLike(s, personName))) ??
+      c.senders.find((s) => !looksLike(s, personName)) ?? c.senders[1] ?? c.senders[0];
     setMe(guess);
   }
 

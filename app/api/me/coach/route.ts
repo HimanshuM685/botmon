@@ -10,10 +10,10 @@ import { CHAR_BUDGET } from "@/lib/ai/models";
 import { overHourlyCap } from "@/lib/ai/turn";
 import { compactThread, recentMessages } from "@/lib/ai/thread";
 import { voiceForPrompt } from "@/lib/voice";
-import { loadSelf, selfVoice } from "@/lib/self/store";
+import { allNames, loadSelf, selfVoice } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { SELF_COACH_SYSTEM, selfTools } from "@/lib/self/coach";
-import { toldItem, traitKey } from "@/lib/self/traits";
+import { toldItem } from "@/lib/self/traits";
 
 export const maxDuration = 60;
 const newId = createIdGenerator({ prefix: "msg", size: 16 });
@@ -44,12 +44,13 @@ export async function POST(req: Request) {
   if (!thread) return Response.json({ error: "Conversation not found" }, { status: 404 });
   await db.coachMessage.create({ data: { id: message.id, threadId: thread.id, role: "user", parts: message.parts } });
 
-  const [rows, me, voice, people] = await Promise.all([recentMessages(thread), loadSelf(userId), selfVoice(userId), db.person.findMany({ where: { userId, deletedAt: undefined }, select: { name: true } })]);
+  const [rows, me, voice, names] = await Promise.all([recentMessages(thread), loadSelf(userId), selfVoice(userId), allNames(userId)]);
   const tools = selfTools(async (kind, text) => {
-    const item = toldItem(kind, text, people.map((p) => p.name)); // no names of the people in their life
+    const item = toldItem(kind, text, names); // no names of the people in their life
     if (!item) return false;
     // Told by the user directly: their own word, which background work never rewrites or removes.
-    await db.selfTrait.upsert({ where: { userId_kind_key: { userId, kind: item.kind, key: traitKey(item.text) } }, create: { userId, kind: item.kind, key: item.key, text: item.text, source: "USER" }, update: { deletedAt: null } });
+    // Already learned from a chat: now it is theirs too, so it stays whatever happens to that chat's evidence.
+    await db.selfTrait.upsert({ where: { userId_kind_key: { userId, kind: item.kind, key: item.key } }, create: { userId, kind: item.kind, key: item.key, text: item.text, source: "USER" }, update: { deletedAt: null, source: "USER" } });
     return true;
   });
   let messages: UIMessage[];

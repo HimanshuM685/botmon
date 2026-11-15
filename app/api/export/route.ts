@@ -2,7 +2,7 @@ import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { loadChat } from "@/lib/data";
 import { decrypt } from "@/lib/crypto";
-import { exportEdge, exportEvidence } from "@/lib/graph/export";
+import { exportEdge } from "@/lib/graph/export";
 
 export async function GET() {
   const userId = await getUserId();
@@ -46,7 +46,7 @@ export async function GET() {
   const you = {
     summary: self?.summary ?? null,
     voice: self?.voiceCipher ? JSON.parse(decrypt(self.voiceCipher)) : null,
-    traits: traits.map(({ evidence, ...t }) => ({ ...t, evidence: evidence.map((e) => exportEvidence(e, decrypt)) })),
+    traits: traits.map(({ evidence, ...t }) => ({ ...t, evidence: evidence.map((e) => exportEdge(e, decrypt)) })),
     threads: selfThreads,
   };
   return new Response(JSON.stringify({ exportedAt: new Date(), you, people: data }, null, 2), {

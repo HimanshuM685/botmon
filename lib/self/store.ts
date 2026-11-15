@@ -22,6 +22,25 @@ export async function refreshSelfVoice(userId: string) {
   await db.selfProfile.upsert({ where: { userId }, create: { userId, voiceCipher }, update: { voiceCipher } });
 }
 
+/**
+ * After a person or chat leaves, comes back or is purged: traits follow their evidence, and the merged voice drops
+ * (or regains) that chat's real sample messages.
+ */
+export async function selfChanged(userId: string) {
+  await recountTraits(userId);
+  await refreshSelfVoice(userId);
+}
+
+/** Every name in the user's life that must never land in a trait: people, how they appear in chats, people in graphs. */
+export async function allNames(userId: string) {
+  const [people, chats, nodes] = await Promise.all([
+    db.person.findMany({ where: { userId, deletedAt: undefined }, select: { name: true } }),
+    db.chatUpload.findMany({ where: { deletedAt: undefined, person: { userId } }, select: { theirName: true } }),
+    db.memoryNode.findMany({ where: { kind: "person", person: { userId } }, select: { label: true } }),
+  ]);
+  return [...people.map((p) => p.name), ...chats.map((c) => c.theirName), ...nodes.map((n) => n.label)];
+}
+
 /** The user's merged voice: for drafts to a person with no chat. Null until a chat was uploaded. */
 export async function selfVoice(userId: string): Promise<Voice | null> {
   const p = await db.selfProfile.findUnique({ where: { userId }, select: { voiceCipher: true } });
@@ -116,9 +135,15 @@ export async function promoteMeEdges(userId: string, person: { id: string; name:
     return [{ it: { ...it, ts }, cipher: mine ? e.quoteCipher : null }];
   });
   if (!items.length) return;
-  const traits = await Promise.all(items.map(({ it }) => db.selfTrait.upsert({ where: { userId_kind_key: { userId, kind: it.kind, key: it.key } }, create: { userId, kind: it.kind, key: it.key, text: it.text, source: "GRAPH" }, update: {}, select: { id: true } })));
-  await db.selfEvidence.createMany({ data: items.map(({ it, cipher }, i) => ({ traitId: traits[i].id, personId: person.id, quoteCipher: cipher, quoteTs: BigInt(it.ts), at: new Date(it.ts) })), skipDuplicates: true });
-  await recountTraits(userId, traits.map((t) => t.id));
+  // One upsert per trait: two edges saying the same thing would race on the unique key.
+  const unique = [...new Map(items.map(({ it }) => [`${it.kind}|${it.key}`, it])).values()];
+  const ids = new Map<string, string>();
+  for (const it of unique) {
+    const t = await db.selfTrait.upsert({ where: { userId_kind_key: { userId, kind: it.kind, key: it.key } }, create: { userId, kind: it.kind, key: it.key, text: it.text, source: "GRAPH" }, update: {}, select: { id: true } });
+    ids.set(`${it.kind}|${it.key}`, t.id);
+  }
+  await db.selfEvidence.createMany({ data: items.map(({ it, cipher }) => ({ traitId: ids.get(`${it.kind}|${it.key}`)!, personId: person.id, quoteCipher: cipher, quoteTs: BigInt(it.ts), at: new Date(it.ts) })), skipDuplicates: true });
+  await recountTraits(userId, [...ids.values()]);
 }
 
 /** The user's visible traits and summary, for prompts and common ground. */

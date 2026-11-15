@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { exportEvidence } from "../graph/export";
+import { exportEdge } from "../graph/export";
 import { SOFT_DELETE_MODELS } from "../soft-delete";
 import { rescope, type Ev } from "./traits";
 import { selfTools } from "./coach";
@@ -8,8 +8,8 @@ import { selfTools } from "./coach";
 const src = (p: string) => readFileSync(new URL(`../../${p}`, import.meta.url), "utf8");
 
 it("export: a trait's evidence carries the user's line decrypted and no BigInt", () => {
-  expect(exportEvidence({ id: "e", traitId: "t", quoteCipher: "c1", quoteTs: BigInt(1763114640000) }, (b) => `line:${b}`)).toEqual({ id: "e", traitId: "t", quoteTs: 1763114640000, quote: "line:c1" });
-  expect(exportEvidence({ quoteCipher: null, quoteTs: BigInt(5) }, String)).toEqual({ quoteTs: 5, quote: null });
+  expect(exportEdge({ id: "e", traitId: "t", quoteCipher: "c1", quoteTs: BigInt(1763114640000) }, (b) => `line:${b}`)).toEqual({ id: "e", traitId: "t", quoteTs: 1763114640000, quote: "line:c1" });
+  expect(exportEdge({ quoteCipher: null, quoteTs: BigInt(5) }, String)).toEqual({ quoteTs: 5, quote: null });
   const route = src("app/api/export/route.ts");
   expect(route).toContain("you,");
   expect(route).toContain("voices: voiceCipher ? JSON.parse(decrypt(voiceCipher)) : null"); // never an encrypted blob in the export
