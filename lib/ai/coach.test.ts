@@ -106,7 +106,7 @@ it("recall walks the graph: by feeling, then one tag away; context carries the e
   const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
   const out = String(await run(tools.recall, { about: "hurt" }));
   expect(out).toContain("Fight about the trip {about: goa trip; felt: hurt -2}");
-  expect(out).toContain("Connected to these:\n- [event] Booked flights");
+  expect(out).toContain('—MENTIONS→ goa trip ["Booked flights"]'); // one step out, through the graph
   expect(out).not.toContain("bike"); // two steps away
   expect(out).not.toContain("sushi");
   await run(tools.remember, { kind: "EVENT", text: "Cried after the call", happenedAt: "", about: [], feeling: "Sad", valence: -5 });
@@ -131,4 +131,29 @@ it("recall over the cap keeps the newest; old stored tool calls without feeling 
   expect(out).not.toContain("Job event number 0");
   const schema = tools.remember.inputSchema as unknown as { safeParse: (i: object) => { success: boolean } };
   expect(schema.safeParse({ kind: "FACT", text: "Likes filter coffee", happenedAt: "", about: [] }).success).toBe(true);
+});
+
+it("searchChat ranks by words matched and shows the lines around a hit", () => {
+  const chat = ["i can't have milk, allergic", "ok noted", "do you like cheese", "not really", "but i'll make you a cheese pasta", "you're the best", "anyway how was work"].map((text, i) => ({ sender: i % 2 ? "Me" : "Riya", text, ts: Date.UTC(2026, 10, 14, 10, i) }));
+  const [top, second] = searchMessages(chat, "cheese pasta milk", 2, 0);
+  expect(top).toContain("> [2026-11-14 10:04] Riya: but i'll make you a cheese pasta"); // two words beat one
+  expect(top).toContain("  [2026-11-14 10:03] Me: not really"); // tone: the lines around it
+  expect(second).toContain("> [2026-11-14 10:00] Riya: i can't have milk, allergic"); // "do you like cheese" is already inside the first hit
+});
+
+it("the coach finds the cheese link: remember writes triples, recall and connect read the graph", async () => {
+  const saved: { text: string; triples?: unknown[] }[] = [];
+  let n = 0;
+  const tools = coachTools({ msgs: [], tz: 0, knownFacts: [], facts: [], personName: "Riya", saveFact: async (f) => (saved.push({ text: f.text, triples: f.triples }), `m${++n}`) });
+  const run = (t: unknown, i: object) => (t as { execute: (i: object, o: object) => Promise<unknown> }).execute(i, {});
+  await run(tools.remember, { kind: "FACT", text: "Allergic to milk", happenedAt: "2026-03-02", about: ["milk"], triples: [{ from: "them", rel: "AVOIDS", to: "milk", label: "allergic" }, { from: "milk", rel: "IS_A", to: "milk product", label: "" }] });
+  await run(tools.remember, { kind: "EVENT", text: "Offered to make me a cheese dish though she doesn't like cheese", happenedAt: "2026-11-14", about: ["cheese"], feeling: "caring", valence: 1, triples: [{ from: "them", rel: "DID_FOR", to: "cheese", label: "offered to cook" }, { from: "cheese", rel: "IS_A", to: "milk product", label: "" }] });
+  expect(saved[1].triples).toHaveLength(2);
+  const recall = String(await run(tools.recall, { about: "cheese" }));
+  expect(recall).toContain("Riya —DID_FOR (offered to cook)→ cheese");
+  expect(recall).toContain("! Effort at a cost");
+  expect(recall).toContain("Allergic to milk");
+  const link = String(await run(tools.connect, { a: "cheese", b: "milk" }));
+  expect(link).toContain("cheese —IS_A→ milk product");
+  expect(String(await run(tools.connect, { a: "cheese", b: "cricket" }))).toBe("Not in memory: cricket.");
 });

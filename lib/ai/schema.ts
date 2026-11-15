@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRIPLE_RELS } from "@/lib/graph";
 
 const withEvidence = (label: string) =>
   z.object({ [label]: z.string(), evidence: z.string().describe("Short quote or paraphrase from the chat that shows it") });
@@ -25,6 +26,19 @@ export const signalsSchema = z
     consistency: signal("0 hot and cold, long unexplained gaps; 2 steady in bursts; 4 reliably present over time"),
   })
   .describe("Rate each strictly by its anchors and only from observations. With thin evidence stay at 1-2; do not reach 0 or 4 without clear, repeated evidence.");
+
+/** Graph edges a memory states. Shared by reads and the coach's remember tool. */
+export const tripleSchema = z.object({
+  from: z.string().describe("'them' (the person), 'me' (the user), or the name of a person, place or thing. Reuse a known name when it is the same thing."),
+  rel: z.enum(TRIPLE_RELS as [string, ...string[]]).describe(
+    "LIKES, WANTS, DISLIKES, AVOIDS (allergy, can't have, boundary), FEARS: an attitude of `from` towards `to`. DID_FOR: `from` did or offered something involving `to`. KNOWS: a person in their life (label: 'sister', 'boss'). IS_A: `from` is a kind of `to` (cheese IS_A milk product). PART_OF: `from` is part of or made from `to` (cheese PART_OF milk). RELATED_TO: anything else.",
+  ),
+  to: z.string().describe("Same naming as `from`"),
+  label: z.string().describe("The detail in 1-4 words: 'allergic', 'sister', 'offered to cook it'. Empty string if none."),
+});
+const tripleList = z
+  .array(tripleSchema)
+  .describe("0-4 graph edges this fact states, e.g. {from:'them', rel:'AVOIDS', to:'milk', label:'allergic'}. When a thing is a kind of, or made from, something already known, add that link too (IS_A / PART_OF), so related memories connect.");
 
 export const analysisSchema = z.object({
   observations: z
@@ -76,6 +90,7 @@ export const analysisSchema = z.object({
         about: z.array(z.string()).describe("1-4 short tags for who or what this is about, reused across facts so related ones connect: e.g. 'sister riya', 'job', 'mumbai trip', 'sushi'. Not the person themself."),
         feeling: z.string().describe("How THEY felt about this, one or two plain words (e.g. 'hurt', 'excited', 'stressed', 'proud'), only if the chat shows it. Else empty string."),
         valence: z.number().describe("How good or bad it was for them: -2 very bad, -1 bad, 0 neutral or unknown, 1 good, 2 very good"),
+        triples: tripleList,
       }),
     )
     .describe("Every concrete detail worth remembering about them. Be exhaustive; this becomes long-term memory."),

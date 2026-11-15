@@ -2,6 +2,7 @@
 
 import { generateText } from "ai";
 import { toEntities, toFeeling, toValence } from "@/lib/facts";
+import { retagMemory, saveMemories } from "@/lib/graph-store";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -299,15 +300,18 @@ const factSchema = z.object({
 export async function saveFact(_: ActionState, form: FormData): Promise<ActionState> {
   const user = await requireUser();
   const personId = String(form.get("personId") ?? "");
-  if (!(await getPerson(user.id, personId))) return { error: "Not found" };
+  const person = await getPerson(user.id, personId);
+  if (!person) return { error: "Not found" };
   const parsed = factSchema.safeParse(Object.fromEntries(form));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const id = form.get("id")?.toString();
   if (id) {
     const res = await db.personFact.updateMany({ where: { id, personId, ...alive }, data: parsed.data });
     if (!res.count) return { error: "Not found" };
+    // The graph follows the tags: edges to things no longer tagged go, new tags are linked.
+    await retagMemory(person, id, parsed.data.entities);
   } else {
-    await db.personFact.create({ data: { ...parsed.data, personId, source: "USER" } });
+    await saveMemories(person, [parsed.data], { source: "USER" });
   }
   // The whole person section: the read's advice depends on the timeline too.
   revalidatePath(`/people/${personId}`, "layout");

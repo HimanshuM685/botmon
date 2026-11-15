@@ -1,5 +1,6 @@
 import type { DeepPartial } from "ai";
 import type { Analysis } from "./ai/schema";
+import type { Triple } from "./graph";
 
 export type FactInput = {
   kind: "FACT" | "EVENT" | "DATE" | "PREFERENCE";
@@ -9,7 +10,12 @@ export type FactInput = {
   /** How the person felt about it ("hurt", "excited"), and how good or bad it was for them: -2..2. */
   feeling: string | null;
   valence: number | null;
+  /** Graph edges this memory states ("them AVOIDS milk"); stored as MemoryEdge rows, not on the fact (lib/graph-store.ts). */
+  triples?: Triple[];
 };
+
+const toTriples = (list: (Partial<Triple> | undefined)[] | undefined): Triple[] =>
+  (list ?? []).flatMap((t) => (t?.from && t.rel && t.to ? [{ from: t.from, rel: t.rel, to: t.to, label: t.label ?? "" }] : [])).slice(0, 8);
 
 /** One short lowercase feeling, or null when none was given. */
 export const toFeeling = (s: string | null | undefined) => s?.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 24) || null;
@@ -49,7 +55,7 @@ export function factsFromAnalysis(a: DeepPartial<Analysis>): FactInput[] {
     if (!f?.fact) continue;
     const date = toDate(f.when);
     const kind = f.category === "preference" ? "PREFERENCE" : f.category === "event" || f.category === "plan" ? "EVENT" : "FACT";
-    out.push({ kind, text: !date && f.when ? `${f.fact} (${f.when})` : f.fact, happenedAt: date, entities: toEntities(f.about), ...felt(f.feeling, f.valence) });
+    out.push({ kind, text: !date && f.when ? `${f.fact} (${f.when})` : f.fact, happenedAt: date, entities: toEntities(f.about), ...felt(f.feeling, f.valence), triples: toTriples(f.triples) });
   }
   for (const d of a.importantDates ?? []) {
     if (!d?.what) continue;

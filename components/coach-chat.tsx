@@ -304,6 +304,7 @@ function Message({ m }: { m: UIMessage }) {
             return out?.updated ? <p key={i} className="chip border-amber/40 text-amber">Memory corrected: {out.saved ?? `removed “${out.retired}”`}</p> : null;
           }
           if (p.type === "tool-recall" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Checking what I remember…</p>;
+          if (p.type === "tool-connect" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Following how things connect…</p>;
           if (p.type === "tool-searchChat" && p.state !== "output-available") return <p key={i} className="text-xs text-dim">Looking through your chat…</p>;
           return null;
         })}

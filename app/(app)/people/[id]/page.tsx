@@ -41,28 +41,6 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
   return (
     <div className="space-y-10">
 
-      {chat && stats && recent && (
-        <section className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-muted">
-              {chat.source === "INSTAGRAM" ? "Instagram" : "WhatsApp"} chat with <strong className="text-paper">{chat.theirName}</strong> · {chat.msgCount.toLocaleString()} messages ·{" "}
-              {chat.firstAt.toLocaleDateString()} – {chat.lastAt.toLocaleDateString()}
-            </p>
-            <ChatActions chatId={chat.id} chatWith={chat.theirName} personName={person.name} others={others} />
-            <ChatUploader personId={person.id} personName={person.name} existing={{ myName: chat.myName, theirName: chat.theirName, lastAt: chat.lastAt.getTime() }} />
-          </div>
-          <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-3xl border border-line bg-line sm:grid-cols-4">
-            <Stat label={`${pronoun} starts`} value={`${stats.theyInitiatePct}%`} hint="of conversations" />
-            <Stat label="Message split" value={`${Math.round((stats.theirs / Math.max(1, stats.total)) * 100)}%`} hint={`from ${person.name.split(" ")[0]}`} />
-            <Stat label={`${pronoun} replies in`} value={fmtMin(stats.theirMedianReplyMin)} hint={`you: ${fmtMin(stats.myMedianReplyMin)}`} />
-            {recent.daysSinceLast > 30 ? (
-              <Stat label="Last message" value={`${recent.daysSinceLast}d`} hint="ago · upload a newer export" />
-            ) : (
-              <Stat label="Last 30 days" value={recent.last30.toLocaleString()} hint={trend(recent.last30, recent.prev30)} />
-            )}
-          </dl>
-        </section>
-      )}
       {!chat && <ChatUploader personId={person.id} personName={person.name} existing={null} />}
 
       {!keyCount && <p className="card p-5 text-sm text-amber">Add an AI key in Settings to run reads and talk to the coach.</p>}
@@ -74,18 +52,27 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         canRun={!!chat && keyCount > 0}
         canSync={keyCount > 0}
         advice={{ stale: last ? adviceStale(last, context) : !chat && enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}
+        chatNumbers={stats && recent ? [
+          { label: `${pronoun} starts`, value: `${stats.theyInitiatePct}%`, hint: "of conversations" },
+          { label: "Message split", value: `${Math.round((stats.theirs / Math.max(1, stats.total)) * 100)}%`, hint: `from ${person.name.split(" ")[0]}` },
+          { label: `${pronoun} replies in`, value: fmtMin(stats.theirMedianReplyMin), hint: `you: ${fmtMin(stats.myMedianReplyMin)}` },
+          recent.daysSinceLast > 30
+            ? { label: "Last message", value: `${recent.daysSinceLast}d`, hint: "ago · upload a newer export" }
+            : { label: "Last 30 days", value: recent.last30.toLocaleString(), hint: trend(recent.last30, recent.prev30) },
+        ] : undefined}
         history={analyses.map((a) => ({ ...a, createdAt: a.createdAt.toISOString(), result: a.id === last?.id ? (last.result as Analysis) : undefined }))}
       />
-    </div>
-  );
-}
 
-function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return (
-    <div className="bg-ink-2 p-5">
-      <dt className="text-xs uppercase tracking-wider text-muted">{label}</dt>
-      <dd className="display mt-2 text-3xl">{value}</dd>
-      <dd className="mt-1 text-xs text-dim">{hint}</dd>
+      {chat && (
+        <section className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-6">
+          <p className="mr-auto text-sm text-muted">
+            {chat.source === "INSTAGRAM" ? "Instagram" : "WhatsApp"} chat with <strong className="text-paper">{chat.theirName}</strong> · {chat.msgCount.toLocaleString()} messages ·{" "}
+            {chat.firstAt.toLocaleDateString()} – {chat.lastAt.toLocaleDateString()}
+          </p>
+          <ChatActions chatId={chat.id} chatWith={chat.theirName} personName={person.name} others={others} />
+          <ChatUploader personId={person.id} personName={person.name} existing={{ myName: chat.myName, theirName: chat.theirName, lastAt: chat.lastAt.getTime() }} />
+        </section>
+      )}
     </div>
   );
 }

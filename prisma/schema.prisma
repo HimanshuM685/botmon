@@ -95,6 +95,8 @@ model Person {
   chats          ChatUpload[]
   analyses       Analysis[]
   facts          PersonFact[]
+  nodes          MemoryNode[]
+  edges          MemoryEdge[]
   threads        CoachThread[]
 
   @@index([userId])
@@ -168,6 +170,7 @@ model PersonFact {
   person     Person       @relation(fields: [personId], references: [id], onDelete: Cascade)
   linksFrom  MemoryLink[] @relation("from")
   linksTo    MemoryLink[] @relation("to")
+  edges      MemoryEdge[]
 
   @@index([personId, deletedAt])
 }
@@ -184,6 +187,48 @@ model MemoryLink {
 
   @@unique([fromId, toId, kind])
   @@index([toId])
+}
+
+/// A node of the memory graph: a person, place, thing or topic in this person's life. Two fixed ones per person,
+/// key "them" and "me". Queried in memory by lib/graph.ts.
+model MemoryNode {
+  id        String       @id @default(cuid())
+  personId  String
+  /// Normalised name (lib/facts.ts normalizeEntity); what PersonFact.entities holds.
+  key       String
+  label     String
+  /// "them" | "me" | "person" | "thing"
+  kind      String       @default("thing")
+  aliases   String[]     @default([])
+  createdAt DateTime     @default(now())
+  person    Person       @relation(fields: [personId], references: [id], onDelete: Cascade)
+  edgesOut  MemoryEdge[] @relation("edgeFrom")
+  edgesIn   MemoryEdge[] @relation("edgeTo")
+
+  @@unique([personId, key])
+}
+
+/// A typed, directed edge: "them AVOIDS milk", "cheese IS_A milk product". `factId` is the memory it was learned
+/// from (its evidence; a trashed memory hides its edges). IS_A / PART_OF edges are knowledge and have none.
+model MemoryEdge {
+  id        String      @id @default(cuid())
+  personId  String
+  fromId    String
+  toId      String
+  /// One of RELS in lib/graph.ts
+  rel       String
+  label     String?
+  factId    String?
+  createdAt DateTime    @default(now())
+  person    Person      @relation(fields: [personId], references: [id], onDelete: Cascade)
+  from      MemoryNode  @relation("edgeFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  to        MemoryNode  @relation("edgeTo", fields: [toId], references: [id], onDelete: Cascade)
+  fact      PersonFact? @relation(fields: [factId], references: [id], onDelete: Cascade)
+
+  @@index([personId])
+  @@index([fromId])
+  @@index([toId])
+  @@index([factId])
 }
 
 model CoachThread {

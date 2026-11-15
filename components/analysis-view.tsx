@@ -35,7 +35,12 @@ function overlay(saved: DeepPartial<Analysis> | undefined, patch: DeepPartial<Mo
   return out as DeepPartial<Analysis>;
 }
 
-export function AnalysisView({ personId, history, hasChat, canRun, canSync, state, advice }: {
+export type ChatNumber = { label: string; value: string; hint: string };
+const menuItem = "block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-ink-3 disabled:opacity-50";
+
+export function AnalysisView({ personId, history, hasChat, canRun, canSync, state, advice, chatNumbers }: {
+  /** Counted from the chat itself (who starts, reply times); shown with the score's breakdown. */
+  chatNumbers?: ChatNumber[];
   personId: string;
   hasChat: boolean;
   history: Saved[];
@@ -156,35 +161,39 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
     <section className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="display mr-auto text-3xl">The read</h2>
-        {history.length > 1 && !isLoading && (
-          <select aria-label="Past analyses" className="input h-9 w-auto" value={picking ?? selected ?? latest?.id} disabled={!!picking} onChange={(e) => pick(e.target.value)}>
-            {history.map((h) => <option key={h.id} value={h.id}>{new Date(h.createdAt).toLocaleString()}{h.mode === "incremental" ? " · update" : ""}</option>)}
-          </select>
-        )}
-        {!isLoading && !waitingForRefresh && (selected ?? latest?.id) && (
-          <ConfirmButton
-            className="text-sm text-muted underline-offset-4 hover:text-heart hover:underline"
-            action={() => trashItem("analysis", (selected ?? latest!.id)!)}
-            title="Delete this read?"
-            description="It moves to the trash; restore it from Trash within 30 days. Facts it added to the timeline stay."
-            confirmLabel="Move to trash"
-            onDone={() => {
-              toast.success("Read moved to trash");
-              setSelected(null); // trashItem already revalidated this page
-            }}
-          >
-            Delete read
-          </ConfirmButton>
+        {!isLoading && !waitingForRefresh && latest && (
+          <details className="relative">
+            <summary className="btn-ghost cursor-pointer list-none [&::-webkit-details-marker]:hidden">More</summary>
+            <div className="absolute right-0 z-20 mt-2 w-64 rounded-2xl border border-line bg-ink-2 p-2 shadow-2xl">
+              {history.length > 1 && (
+                <label className="block px-3 py-2 text-xs text-muted">
+                  Earlier reads
+                  <select className="input mt-1.5 h-9 w-full" value={picking ?? selected ?? latest.id} disabled={!!picking} onChange={(e) => pick(e.target.value)}>
+                    {history.map((h) => <option key={h.id} value={h.id}>{new Date(h.createdAt).toLocaleString()}{h.mode === "incremental" ? " · update" : ""}</option>)}
+                  </select>
+                </label>
+              )}
+              {state !== "none" && <button className={menuItem} disabled={!canRun} onClick={() => run("full")}>Re-read the whole chat</button>}
+              <ConfirmButton
+                className={`${menuItem} text-heart`}
+                action={() => trashItem("analysis", selected ?? latest.id)}
+                title="Delete this read?"
+                description="It moves to the trash; restore it from Trash within 30 days. Facts it added to the timeline stay."
+                confirmLabel="Move to trash"
+                onDone={() => {
+                  toast.success("Read moved to trash");
+                  setSelected(null); // trashItem already revalidated this page
+                }}
+              >
+                Delete this read
+              </ConfirmButton>
+            </div>
+          </details>
         )}
         {isLoading ? (
           <button className="btn-ghost" onClick={stop}>Stop</button>
         ) : (
           <>
-            {state !== "none" && (
-              <button className="text-sm text-muted underline-offset-4 hover:text-paper hover:underline disabled:opacity-50" disabled={!canRun} onClick={() => run("full")}>
-                Full re-read
-              </button>
-            )}
             {hasChat ? (
               <button className="btn-primary" disabled={!canRun || state === "current"} onClick={() => run("auto")}>
                 {state === "update" ? "Update with new messages" : state === "current" ? "Up to date" : "Analyze chat"}
@@ -213,7 +222,7 @@ export function AnalysisView({ personId, history, hasChat, canRun, canSync, stat
         </div>
       )}
       {isLoading && !object?.status && <div className="card h-48 animate-pulse" aria-busy />}
-      {shown && <Report a={shown} live={isLoading} advice={adviceStatus} />}
+      {shown && <Report a={shown} live={isLoading} advice={adviceStatus} personId={personId} chatNumbers={chatNumbers} />}
     </section>
   );
 }
@@ -225,54 +234,124 @@ const SIGNALS = [
 
 const TREND = { warming: "▲ warming", steady: "● steady", cooling: "▼ cooling" } as const;
 
-const SECTIONS = [
-  ["now", "Now"], ["person", "Who they are"], ["memory", "Memory"], ["story", "Your story"], ["you", "Your side"], ["moves", "What to do"],
-] as const;
+/** Several lists as one: empty entries and case-insensitive repeats dropped. */
+function merged(...lists: ((string | undefined)[] | undefined)[]): string[] {
+  const seen = new Set<string>();
+  return lists.flatMap((l) => l ?? []).filter((t): t is string => {
+    const k = t?.trim().toLowerCase();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
 
-function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; advice?: AdviceStatus }) {
+/**
+ * Answer first: where things stand, what to do, what to send. Then what to keep in mind.
+ * Everything else is grouped by the question it answers and folded until wanted.
+ */
+function Report({ a, live, advice, personId, chatNumbers }: { a: DeepPartial<Analysis>; live: boolean; advice?: AdviceStatus; personId: string; chatNumbers?: ChatNumber[] }) {
   const score = a.status?.score == null ? undefined : Math.round(a.status.score);
   const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.success("Copied"));
-  return (
-    <div className="space-y-10" aria-live="polite">
-      <nav aria-label="Report sections" className="sticky top-16 z-10 -mx-1 flex gap-1 overflow-x-auto bg-ink/90 py-2 backdrop-blur">
-        {SECTIONS.map(([id, label]) => (
-          <a key={id} href={`#r-${id}`} className="chip shrink-0 hover:border-heart/50 hover:text-paper">{label}</a>
-        ))}
-      </nav>
+  const moves = a.nextMoves?.filter((m) => m?.action) ?? [];
+  const sends = a.messageSuggestions?.filter((s): s is string => !!s) ?? [];
+  const dos = merged(a.thingsToCareAbout, a.emotional?.comforts);
+  const donts = merged(a.avoid, a.emotional?.triggers);
+  const unfinished = merged(a.openThreads);
+  const rated = SIGNALS.flatMap(([k, label]) => (typeof a.signals?.[k]?.level === "number" ? [{ label, level: a.signals[k]!.level! }] : []));
+  const best = rated.length ? rated.reduce((x, y) => (y.level > x.level ? y : x)) : null;
+  const worst = rated.length ? rated.reduce((x, y) => (y.level < x.level ? y : x)) : null;
+  const openConflicts = a.conflicts?.filter((c) => c && !c.resolved).length ?? 0;
+  const pad = "p-6 sm:p-8";
 
-      {advice && (advice.state !== "idle" || a.whatChanged || advice.at) && (
-        <div className="card flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 text-sm" aria-live="polite">
-          {advice.state === "updating" ? (
-            <span className="animate-pulse text-mint">Updating with what’s new…</span>
-          ) : advice.state === "failed" ? (
-            <>
-              <span className="text-amber">Something new isn’t in this read yet.</span>
-              <button className="text-heart underline-offset-4 hover:underline" onClick={advice.refresh}>Update now</button>
-            </>
-          ) : (
-            <>
-              {a.whatChanged && <span className="min-w-0 flex-1 text-muted">{a.whatChanged}</span>}
-              {advice.at && <span className="chip shrink-0">Updated {new Date(advice.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>}
-            </>
+  return (
+    <div className="space-y-4" aria-live="polite">
+      <div className="card divide-y divide-line">
+        <div className={pad}>
+          {live && <p className="mb-5 animate-pulse text-sm text-mint" aria-busy>Reading the chat… {a.observations?.length ?? 0} moments found</p>}
+          {a.status && (
+            <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+              <ScoreRing score={score} />
+              <div className="min-w-0">
+                <p className="display text-3xl italic">{a.status.label}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {a.status.trend && <span className={`chip ${a.status.trend === "cooling" ? "text-amber" : a.status.trend === "warming" ? "text-mint" : ""}`}>{TREND[a.status.trend]}</span>}
+                  {a.status.confidence && <span className="chip">{a.status.confidence} confidence</span>}
+                </div>
+                <p className="mt-3 leading-relaxed text-muted">{a.status.explanation}</p>
+              </div>
+            </div>
+          )}
+          {advice && (advice.state !== "idle" || a.whatChanged || advice.at) && (
+            <p className="mt-5 text-xs text-dim" aria-live="polite">
+              {advice.state === "updating" ? (
+                <span className="animate-pulse text-mint">Updating with what’s new…</span>
+              ) : advice.state === "failed" ? (
+                <>
+                  <span className="text-amber">Something new isn’t in this read yet.</span>{" "}
+                  <button className="text-heart underline-offset-4 hover:underline" onClick={advice.refresh}>Update now</button>
+                </>
+              ) : (
+                <>
+                  {advice.at && <>Updated {new Date(advice.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}. </>}
+                  {a.whatChanged}
+                </>
+              )}
+            </p>
           )}
         </div>
-      )}
-      <Group id="now" title="Where things stand">
-        {a.status && (
-          <div className="card flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:p-8">
-            <ScoreRing score={score} />
-            <div className="min-w-0">
-              <p className="display text-3xl italic">{a.status.label}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {a.status.trend && <span className={`chip ${a.status.trend === "cooling" ? "text-amber" : a.status.trend === "warming" ? "text-mint" : ""}`}>{TREND[a.status.trend]}</span>}
-                {a.status.confidence && <span className="chip">{a.status.confidence} confidence</span>}
-              </div>
-              <p className="mt-3 leading-relaxed text-muted">{a.status.explanation}</p>
-            </div>
+
+        {moves.length > 0 && (
+          <div className={pad}>
+            <Block title="Do this next" tone="mint">
+              <ol className="space-y-4">
+                {moves.map((m, i) => (
+                  <li key={i} className="flex gap-4">
+                    <span className="display text-2xl text-mint">{i + 1}</span>
+                    <div>
+                      <p className="font-medium">{m!.action}</p>
+                      {m!.why && <p className="mt-1 text-sm text-muted">{m!.why}</p>}
+                      {m!.when && <p className="chip mt-2">{m!.when}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </Block>
           </div>
         )}
-        {a.signals && (
-          <Block title="What the score is built on">
+
+        {sends.length > 0 && (
+          <div className={pad}>
+            <Block title="Send one of these" tone="heart">
+              <ul className="space-y-2">
+                {sends.map((s, i) => (
+                  <li key={i} className="flex items-start justify-between gap-3">
+                    {/* Each line is its own message, the way the user sends them. */}
+                    <div className="flex min-w-0 flex-col items-start gap-1">
+                      {s.split("\n").filter(Boolean).map((line, j) => (
+                        <span key={j} className="rounded-2xl rounded-bl-md bg-heart/10 px-4 py-2.5 text-sm">{line}</span>
+                      ))}
+                    </div>
+                    {!live && <button className="mt-2.5 shrink-0 text-xs text-heart hover:underline" onClick={() => copy(s)}>Copy</button>}
+                  </li>
+                ))}
+              </ul>
+              {!!a.voiceFrom && <p className="mt-4 text-xs text-dim">Written the way you type, learned from {a.voiceFrom.toLocaleString()} of your own messages.</p>}
+            </Block>
+          </div>
+        )}
+      </div>
+
+      {(dos.length > 0 || donts.length > 0 || unfinished.length > 0) && (
+        <div className={`card grid gap-8 md:grid-cols-3 ${pad}`}>
+          <Bullets title="Do" items={dos} dot="bg-mint" />
+          <Bullets title="Don't" items={donts} dot="bg-heart-2" />
+          <Bullets title="Unfinished between you" items={unfinished} dot="bg-amber" />
+        </div>
+      )}
+
+      {(rated.length > 0 || !!chatNumbers?.length) && (
+        <Fold title="Why this score" preview={best && worst && best !== worst ? `Strongest: ${best.label.toLowerCase()} · weakest: ${worst.label.toLowerCase()}` : undefined}>
+          {rated.length > 0 && (
             <ul className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
               {SIGNALS.map(([k, label]) => {
                 const sg = a.signals?.[k];
@@ -288,76 +367,61 @@ function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; 
                 );
               })}
             </ul>
-          </Block>
-        )}
-        {a.emotional && (
-          <Block title="Their mood lately">
-            <p className="leading-relaxed text-muted">{a.emotional.currentMood}</p>
-            <div className="mt-5 grid gap-6 md:grid-cols-2">
-              <Bullets title="What upsets them" items={a.emotional.triggers} dot="bg-amber" />
-              <Bullets title="What comforts them" items={a.emotional.comforts} dot="bg-mint" />
-            </div>
-          </Block>
-        )}
-      </Group>
+          )}
+          {!!chatNumbers?.length && (
+            <Block title="From the chat itself">
+              <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                {chatNumbers.map((n) => (
+                  <div key={n.label}>
+                    <dt className="text-xs text-muted">{n.label}</dt>
+                    <dd className="display mt-1 text-2xl">{n.value}</dd>
+                    <dd className="text-xs text-dim">{n.hint}</dd>
+                  </div>
+                ))}
+              </dl>
+            </Block>
+          )}
+        </Fold>
+      )}
 
-      <Group id="person" title="Who they are">
-        {a.mind && (
-          <Block title="How they think" tone="heart">
+      {(a.mind || a.emotional?.currentMood) && (
+        <Fold title="How they think" preview={a.mind?.howTheySeeYou?.view ?? a.emotional?.currentMood}>
+          {a.mind && (
             <dl className="grid gap-5 md:grid-cols-2">
               {a.mind.howTheySeeYou?.view && <Mind label="How they see you" text={a.mind.howTheySeeYou.view} evidence={a.mind.howTheySeeYou.evidence} />}
               {a.mind.whatTheyWant?.want && <Mind label="What they want from this" text={a.mind.whatTheyWant.want} evidence={a.mind.whatTheyWant.evidence} />}
               {a.mind.investment && <Mind label="How much they put in" text={a.mind.investment} />}
               {a.mind.emotionalPattern && <Mind label="How they show feelings" text={a.mind.emotionalPattern} />}
             </dl>
-            <div className="mt-6"><Bullets title="Not clear yet" items={a.mind.unknowns} dot="bg-dim" /></div>
-          </Block>
-        )}
-        {a.personality && (
-          <Block title="Personality">
-            <p className="leading-relaxed text-muted">{a.personality.summary}</p>
-            <Evidence items={a.personality.traits} k="trait" />
-          </Block>
-        )}
-        {a.communicationStyle && <Block title="How they text"><p className="leading-relaxed text-muted">{a.communicationStyle}</p></Block>}
-        {!!a.loveLanguages?.length && <Block title="Love languages"><Evidence items={a.loveLanguages} k="language" /></Block>}
-        {!!a.interests?.length && <Block title="Interests"><Evidence items={a.interests} k="topic" /></Block>}
-        <div className="grid gap-4 md:grid-cols-2">
-          <List title="They love" items={a.likes} dot="bg-heart" />
-          <List title="They don't like" items={a.dislikes} dot="bg-dim" />
-        </div>
-      </Group>
+          )}
+          {a.emotional?.currentMood && <Block title="Their mood lately"><p className="leading-relaxed text-muted">{a.emotional.currentMood}</p></Block>}
+          <Bullets title="Not clear yet" items={a.mind?.unknowns} dot="bg-dim" />
+        </Fold>
+      )}
 
-      {(!!a.keyFacts?.length || !!a.importantDates?.length || !!a.openThreads?.length) && (
-        <Group id="memory" title="Details worth remembering">
-          {!!a.keyFacts?.length && (
-            <Block title="Key facts">
-              <ul className="grid gap-2 sm:grid-cols-2">
-                {a.keyFacts.map((f, i) => f?.fact && (
-                  <li key={i} className="rounded-xl bg-ink-3 px-3 py-2 text-sm">
-                    {f.fact}
-                    <span className="mt-0.5 block text-xs text-dim">{f.category}{f.when ? ` · ${f.when}` : ""}</span>
-                  </li>
-                ))}
-              </ul>
-              {!live && <p className="mt-4 text-xs text-dim">New details are saved to the Timeline automatically.</p>}
+      {(a.personality || a.communicationStyle || !!a.likes?.length || !!a.interests?.length || !!a.loveLanguages?.length || !!a.dislikes?.length) && (
+        <Fold title="Who they are" preview={merged(a.personality?.traits?.map((t) => t?.trait)).join(" · ") || a.personality?.summary}>
+          {a.personality && (
+            <Block title="Personality">
+              <p className="leading-relaxed text-muted">{a.personality.summary}</p>
+              <Evidence items={a.personality.traits} k="trait" />
             </Block>
           )}
-          <div className="grid gap-4 md:grid-cols-2">
-            {!!a.importantDates?.length && (
-              <Block title="Important dates">
-                <ul className="space-y-2 text-sm">
-                  {a.importantDates.map((d, i) => d?.what && <li key={i}><span className="font-mono text-amber">{d.date}</span> · {d.what}</li>)}
-                </ul>
-              </Block>
-            )}
-            <List title="Open threads" items={a.openThreads} dot="bg-amber" />
-          </div>
-        </Group>
+          {a.communicationStyle && <Block title="How they text"><p className="leading-relaxed text-muted">{a.communicationStyle}</p></Block>}
+          {(!!a.likes?.length || !!a.interests?.length || !!a.loveLanguages?.length) && (
+            <Block title="What they like">
+              <Bullets items={a.likes} dot="bg-heart" />
+              <Evidence items={a.interests} k="topic" />
+              {!!a.loveLanguages?.length && <p className="mt-5 text-xs text-muted">How they give and want affection</p>}
+              <Evidence items={a.loveLanguages} k="language" />
+            </Block>
+          )}
+          <List title="What they don't" items={a.dislikes} dot="bg-dim" />
+        </Fold>
       )}
 
       {(!!a.timeline?.length || a.conflicts) && (
-        <Group id="story" title="Your story so far">
+        <Fold title="Your story" preview={`${a.timeline?.length ?? 0} phases · ${openConflicts ? `${openConflicts} open conflict${openConflicts === 1 ? "" : "s"}` : "no open conflicts"}`}>
           {!!a.timeline?.length && (
             <Block title="Phases">
               <ol className="space-y-4 border-l border-line pl-5">
@@ -385,68 +449,39 @@ function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; 
               ) : <p className="text-sm text-dim">No real conflicts so far.</p>}
             </Block>
           )}
-        </Group>
+        </Fold>
       )}
 
-      <Group id="you" title="Your side">
-        {a.yourSide && (
-          <div className="grid gap-4 md:grid-cols-2">
-            <List title="What you do well" items={a.yourSide.strengths} dot="bg-mint" />
-            <List title="Blind spots" items={a.yourSide.blindSpots} dot="bg-amber" />
+      {(a.yourSide || !!a.greenFlags?.length || !!a.redFlags?.length || !!a.conversationStarters?.length) && (
+        <Fold title="Your side" preview={a.yourSide?.blindSpots?.[0] ? `Watch: ${a.yourSide.blindSpots[0]}` : undefined}>
+          <div className="grid gap-8 md:grid-cols-2">
+            <List title="What you do well" items={a.yourSide?.strengths} dot="bg-mint" />
+            <List title="Blind spots" items={a.yourSide?.blindSpots} dot="bg-amber" />
+            <List title="Green flags" items={a.greenFlags} dot="bg-mint" />
+            <List title="Red flags" items={a.redFlags} dot="bg-amber" empty="None spotted." />
           </div>
-        )}
-        <div className="grid gap-4 md:grid-cols-2">
-          <List title="Green flags" items={a.greenFlags} dot="bg-mint" />
-          <List title="Red flags" items={a.redFlags} dot="bg-amber" empty="None spotted." />
-        </div>
-      </Group>
+          <List title="Things to talk about" items={a.conversationStarters} dot="bg-heart" />
+        </Fold>
+      )}
 
-      <Group id="moves" title="What to do">
-        {!!a.nextMoves?.length && (
-          <Block title="Next moves" tone="mint">
-            <ol className="space-y-4">
-              {a.nextMoves.map((m, i) => m?.action && (
-                <li key={i} className="flex gap-4">
-                  <span className="display text-2xl text-mint">{i + 1}</span>
-                  <div>
-                    <p className="font-medium">{m.action}</p>
-                    {m.why && <p className="mt-1 text-sm text-muted">{m.why}</p>}
-                    {m.when && <p className="chip mt-2">{m.when}</p>}
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </Block>
-        )}
-        {!!a.messageSuggestions?.length && (
-          <Block title="Things you could send" tone="heart">
-            <ul className="space-y-2">
-              {a.messageSuggestions.map((s, i) => s && (
-                <li key={i} className="flex items-start justify-between gap-3">
-                  {/* Each line is its own message, the way the user sends them. */}
-                  <div className="flex min-w-0 flex-col items-start gap-1">
-                    {s.split("\n").filter(Boolean).map((line, j) => (
-                      <span key={j} className="rounded-2xl rounded-bl-md bg-heart/10 px-4 py-2.5 text-sm">{line}</span>
-                    ))}
-                  </div>
-                  {!live && <button className="mt-2.5 shrink-0 text-xs text-heart hover:underline" onClick={() => copy(s)}>Copy</button>}
-                </li>
-              ))}
-            </ul>
-            {!!a.voiceFrom && <p className="mt-4 text-xs text-dim">Written the way you type, learned from {a.voiceFrom.toLocaleString()} of your own messages.</p>}
-          </Block>
-        )}
-        <div className="grid gap-4 md:grid-cols-2">
-          <List title="Conversation starters" items={a.conversationStarters} dot="bg-heart" />
-          <List title="Keep in mind" items={a.thingsToCareAbout} dot="bg-paper" />
-          <List title="Avoid" items={a.avoid} dot="bg-heart-2" />
-        </div>
-      </Group>
+      {(!!a.keyFacts?.length || !!a.importantDates?.length) && (
+        <Fold title="Remembered details" preview={`${a.keyFacts?.length ?? 0} details · ${a.importantDates?.length ?? 0} dates`}>
+          {!!a.importantDates?.length && (
+            <Block title="Important dates">
+              <ul className="space-y-2 text-sm">
+                {a.importantDates.map((d, i) => d?.what && <li key={i}><span className="font-mono text-amber">{d.date}</span> · {d.what}</li>)}
+              </ul>
+            </Block>
+          )}
+          <p className="text-sm text-muted">
+            {live ? "Details from this read are saved to the Timeline when it finishes." : <>Everything this read picked up about them is on the <Link href={`/people/${personId}/timeline`} className="text-heart underline-offset-4 hover:underline">Timeline</Link>, where you can edit or remove it.</>}
+          </p>
+        </Fold>
+      )}
 
       {!!a.observations?.length && (
-        <details className="card p-6 sm:p-8">
-          <summary className="label cursor-pointer">Evidence this read is built on ({a.observations.length})</summary>
-          <ul className="mt-4 space-y-3">
+        <Fold title="Evidence" preview={`${a.observations.length} moments from the chat this read is built on`}>
+          <ul className="space-y-3">
             {a.observations.map((o, i) => o?.quote && (
               <li key={i} className="rounded-2xl bg-ink-3 p-4 text-sm">
                 <p className="font-mono text-xs text-dim">{o.when}{o.signal ? ` · ${o.signal}` : ""}</p>
@@ -455,28 +490,33 @@ function Report({ a, live, advice }: { a: DeepPartial<Analysis>; live: boolean; 
               </li>
             ))}
           </ul>
-        </details>
+        </Fold>
       )}
     </div>
   );
 }
 
-function Group({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+/** One folded section: a title, a one-line taste of what's inside, and the content on demand. */
+function Fold({ title, preview, children }: { title: string; preview?: string; children: React.ReactNode }) {
   return (
-    <section id={`r-${id}`} className="scroll-mt-32 space-y-4">
-      <h3 className="display text-2xl text-paper/90">{title}</h3>
-      {children}
-    </section>
+    <details className="card group">
+      <summary className="flex cursor-pointer list-none items-baseline gap-4 px-6 py-4 sm:px-8 [&::-webkit-details-marker]:hidden">
+        <span className="shrink-0 font-medium">{title}</span>
+        <span className="min-w-0 flex-1 truncate text-sm text-muted group-open:invisible">{preview}</span>
+        <span aria-hidden className="text-dim transition-transform group-open:rotate-90">›</span>
+      </summary>
+      <div className="space-y-8 border-t border-line px-6 py-6 sm:px-8">{children}</div>
+    </details>
   );
 }
 
-function Bullets({ title, items, dot }: { title: string; items?: (string | undefined)[]; dot: string }) {
+function Bullets({ title, items, dot }: { title?: string; items?: (string | undefined)[]; dot: string }) {
   if (!items?.length) return null;
   return (
     <div>
-      <p className="label">{title}</p>
+      {title && <p className="label">{title}</p>}
       <ul className="space-y-2">
-        {items.map((t, i) => t && <li key={i} className="flex gap-3 text-sm"><span className={`mt-2 size-1.5 shrink-0 rounded-full ${dot}`} />{t}</li>)}
+        {items.map((t, i) => t && <li key={i} className="flex gap-3 text-sm leading-relaxed"><span className={`mt-2 size-1.5 shrink-0 rounded-full ${dot}`} />{t}</li>)}
       </ul>
     </div>
   );
@@ -521,11 +561,12 @@ function ScoreRing({ score }: { score?: number }) {
   );
 }
 
+/** A labelled part of a card or fold (no border of its own: no cards inside cards). */
 function Block({ title, tone, children }: { title: string; tone?: "mint" | "heart"; children: React.ReactNode }) {
   const color = tone === "mint" ? "text-mint" : tone === "heart" ? "text-heart" : "text-muted";
   return (
-    <div className="card p-6 sm:p-8">
-      <h3 className={`label mb-4 ${color}`}>{title}</h3>
+    <div>
+      <h4 className={`label mb-3 ${color}`}>{title}</h4>
       {children}
     </div>
   );
@@ -535,16 +576,7 @@ function List({ title, items, dot, empty }: { title: string; items?: (string | u
   if (!items?.length && !empty) return null;
   return (
     <Block title={title}>
-      {items?.length ? (
-        <ul className="space-y-2.5">
-          {items.map((t, i) => t && (
-            <li key={i} className="flex gap-3 text-sm leading-relaxed">
-              <span className={`mt-2 size-1.5 shrink-0 rounded-full ${dot}`} />
-              {t}
-            </li>
-          ))}
-        </ul>
-      ) : <p className="text-sm text-dim">{empty}</p>}
+      {items?.length ? <Bullets items={items} dot={dot} /> : <p className="text-sm text-dim">{empty}</p>}
     </Block>
   );
 }

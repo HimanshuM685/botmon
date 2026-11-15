@@ -10,6 +10,7 @@ import { seedFor, streamResponse } from "@/lib/ai/stream";
 import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts, normalizeFact } from "@/lib/facts";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
+import { linkMemories, loadGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
 
 export const maxDuration = 300;
@@ -64,7 +65,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const total = CHAR_BUDGET[key.provider];
   const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE));
   const emotion = emotionMap(facts);
-  const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
+  const graph = await loadGraph(person, facts);
+  const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
+  const chatBudget = Math.max(5_000, total - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const stats = await getChatStats(chat);
   const voice = voiceProfile(msgs, chat.myName);
   const prompt = buildPrompt({
@@ -82,6 +85,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     anchor: !prev && prior ? (prior.result as unknown as Analysis) : undefined,
     facts: memory.facts,
     emotion,
+    graph: graphBrief,
+    known,
     voice: voice ? voiceForPrompt(voice) : undefined,
   });
   const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
@@ -117,8 +122,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // Facts the user deleted count as known too, so a re-read doesn't bring them back.
       const found = factsFromAnalysis(output);
       const fresh = newFacts(allFacts.map((f) => f.text), found);
-      if (fresh.length)
-        await db.personFact.createMany({ data: fresh.map((f) => ({ ...f, personId: person.id, source: "ANALYSIS" as const, analysisId: run.id })) });
+      // Saved through the graph store: each memory's triples become nodes and edges.
+      await saveMemories(person, fresh, { source: "ANALYSIS", analysisId: run.id });
       // Connect older memories too: ones saved before tags or feelings existed get what this read gave the same fact.
       // Only never-edited memories: if the user edited one (e.g. cleared its tags), that choice stands.
       // Feelings also reach memories last changed before feelings existed: nobody could have cleared one then
@@ -137,6 +142,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           // updatedAt kept: a backfill is not an edit, so it neither looks like one next time nor counts as new information.
           data: { ...(tags ? { entities: now!.entities } : {}), ...(felt ? { feeling: now!.feeling, valence: now!.valence } : {}), updatedAt: f.updatedAt },
         })));
+      // Memories already on the timeline gain the edges this read states for the same fact (the store skips ones they have).
+      const storedId = new Map(facts.map((f) => [normalizeFact(f.text), f.id]));
+      await linkMemories(person, found.flatMap((f) => {
+        const factId = storedId.get(normalizeFact(f.text));
+        return factId && f.triples?.length ? [{ factId, triples: f.triples }] : [];
+      }));
+      // Memories that just got their tags join the graph with them.
+      await linkMemories(person, backfill.filter((b) => b.tags).map(({ f, now }) => ({ factId: f.id, tags: now!.entities, triples: now!.triples })));
       // Fingerprint after the new facts land, so the read's own facts don't make its advice look stale.
       const contextHash = await currentContextHash(person);
       await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash, adviceAt: new Date() } });

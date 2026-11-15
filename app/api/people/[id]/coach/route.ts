@@ -18,7 +18,9 @@ import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { CHAR_BUDGET } from "@/lib/ai/models";
 import { emotionMap, entitiesIn, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
-import { buildCoachContext, COACH_HISTORY, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
+import { buildCoachContext, COACH_HISTORY, COACH_STEPS, COACH_SYSTEM, coachTools } from "@/lib/ai/coach";
+import { buildGraph } from "@/lib/graph";
+import { loadGraphRows, saveMemories } from "@/lib/graph-store";
 import type { RelationId } from "@/lib/ai/prompt";
 import { voiceForPrompt, voiceProfile } from "@/lib/voice";
 
@@ -60,11 +62,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Save the user's message before calling the model, so nothing they type is lost even if the AI fails.
   await db.coachMessage.create({ data: { id: message.id, threadId: thread.id, role: "user", parts: message.parts } });
 
-  const [rows, chat, read, allFacts] = await Promise.all([
+  const [rows, chat, read, allFacts, graphRows] = await Promise.all([
     db.coachMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: COACH_HISTORY }),
     getChat(person.id),
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
     db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true } }),
+    loadGraphRows(person.id),
   ]);
   const facts = allFacts.filter((f) => !f.deletedAt);
   // One budget for the whole context: timeline (capped), latest read, conversation, then recent chat.
@@ -73,7 +76,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const focus = entitiesIn(message.parts.map((p) => p.text).join(" "), facts.flatMap((f) => f.entities));
   const memory = factsWithinBudget(facts, Math.floor(total * FACTS_SHARE), focus);
   const emotion = emotionMap(facts);
-  const used = memory.chars + emotion.length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
+  // Retrieval before the model: the part of the graph around what the user just mentioned, and what its links show.
+  const graph = buildGraph(graphRows.nodes, graphRows.edges, facts, { them: person.name });
+  const said = message.parts.map((p) => p.text).join(" ");
+  const graphBrief = graph.brief(graph.mentioned(said).map((n) => n.id)).slice(0, 12_000);
+  const known = graph.known();
+  const used = memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + 6_000;
   const chatBudget = Math.max(3_000, total - used);
   const msgs = chat ? await loadChat(chat.cipher) : [];
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
@@ -82,7 +90,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     msgs,
     tz: chat?.tzOffset ?? 0,
     knownFacts: allFacts.map((f) => f.text), // incl. trashed ones, so the coach doesn't re-add what the user deleted
-    saveFact: async (f) => (await db.personFact.create({ data: { ...f, personId: person.id, source: "COACH" }, select: { id: true } })).id,
+    saveFact: async (f) => (await saveMemories(person, [f], { source: "COACH" }))[0],
+    graph: graphRows,
+    personName: person.name,
     facts,
     linkFacts: async (fromId, toId, kind) => {
       await db.memoryLink.create({ data: { fromId, toId, kind } });
@@ -109,6 +119,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     read: read?.result ?? null,
     facts: memory.facts,
     emotion,
+    graph: graphBrief,
+    known,
     budget: chatBudget,
     voice: voice ? voiceForPrompt(voice) : undefined,
   });
@@ -118,7 +130,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     system: `${COACH_SYSTEM}\n\n${context}`,
     messages: await convertToModelMessages(messages),
     tools,
-    stopWhen: stepCountIs(5),
+    stopWhen: stepCountIs(COACH_STEPS),
     maxRetries: 1,
   });
 

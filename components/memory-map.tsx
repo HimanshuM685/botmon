@@ -4,6 +4,8 @@ import { useMemo } from "react";
 
 export type MapFact = { id: string; kind: string; text: string; entities: string[]; feeling?: string | null; valence?: number | null };
 export type MapLink = { fromId: string; toId: string; kind: string };
+/** A graph edge between two topics (node keys), e.g. cheese IS_A milk product. */
+export type MapRelation = { from: string; to: string; rel: string };
 
 const W = 720, H = 460, CX = W / 2, CY = H / 2;
 const MAX_HUBS = 12;
@@ -40,8 +42,8 @@ export function layout(facts: MapFact[]) {
   return { hubs, nodes, loose: loose.length };
 }
 
-export function MemoryMap({ name, facts, links, selected, onSelect }: {
-  name: string; facts: MapFact[]; links: MapLink[]; selected: string | null; onSelect: (entity: string | null) => void;
+export function MemoryMap({ name, facts, links, relations = [], selected, onSelect }: {
+  name: string; facts: MapFact[]; links: MapLink[]; relations?: MapRelation[]; selected: string | null; onSelect: (entity: string | null) => void;
 }) {
   const { hubs, nodes, loose } = useMemo(() => layout(facts), [facts]);
   if (!hubs.length)
@@ -61,6 +63,11 @@ export function MemoryMap({ name, facts, links, selected, onSelect }: {
             {n.also.map((e) => <line key={e} x1={n.x} y1={n.y} x2={hub.get(e)!.x} y2={hub.get(e)!.y} stroke="var(--heart)" strokeOpacity={0.35} strokeDasharray="3 4" />)}
           </g>
         ))}
+        {/* Topics that belong together in the graph (cheese IS_A milk product). */}
+        {relations.map((r, i) => {
+          const a = hub.get(r.from), b = hub.get(r.to);
+          return a && b ? <line key={`r${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="var(--mint)" strokeOpacity={0.6} strokeWidth={1.5} opacity={dim([r.from, r.to])}><title>{`${r.from} ${r.rel} ${r.to}`}</title></line> : null;
+        })}
         {links.map((l, i) => {
           const a = pos.get(l.fromId), b = pos.get(l.toId);
           return a && b ? <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="var(--amber)" strokeOpacity={0.7}><title>{l.kind}</title></line> : null;

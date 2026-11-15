@@ -98,3 +98,8 @@ it("over budget, memories one tag away from the focus beat unrelated ones", () =
   ];
   expect(within(facts, 180, ["wedding"]).facts.map((f) => f.text)).toEqual([facts[0].text, facts[1].text]);
 });
+
+it("factsFromAnalysis carries a fact's graph triples, dropping incomplete ones", () => {
+  const [f] = factsFromAnalysis({ keyFacts: [{ fact: "Allergic to milk", category: "health", when: "", about: ["milk"], triples: [{ from: "them", rel: "AVOIDS", to: "milk", label: "allergic" }, { from: "them", rel: "LIKES" }] }] });
+  expect(f.triples).toEqual([{ from: "them", rel: "AVOIDS", to: "milk", label: "allergic" }]);
+});

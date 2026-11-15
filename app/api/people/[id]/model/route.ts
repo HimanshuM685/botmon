@@ -15,6 +15,7 @@ import { applyPatch, changedSince, enoughMemory } from "@/lib/model";
 import { computeScore } from "@/lib/stats";
 import { applyVoice, voiceForPrompt, voiceProfile } from "@/lib/voice";
 import { claimModelRun, releaseModelRun } from "@/lib/model-lock";
+import { loadGraph } from "@/lib/graph-store";
 
 export const maxDuration = 300;
 const HOURLY_LIMIT = 10; // first reads built from memory share the read limit
@@ -60,6 +61,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const msgs = chat ? await loadChat(chat.cipher) : [];
   const voice = chat ? voiceProfile(msgs, chat.myName) : null;
   const emotion = emotionMap(facts); // shares the memory budget below
+  const graph = await loadGraph(person, facts);
   const base = {
     voice: voice ? voiceForPrompt(voice) : undefined,
     personName: person.name,
@@ -72,6 +74,9 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     tzOffsetMin: chat?.tzOffset ?? 0,
     facts: factsWithinBudget(facts, Math.floor(CHAR_BUDGET[key.provider] * FACTS_SHARE) - emotion.length, added.flatMap((f) => f.entities)).facts,
     emotion,
+    // The graph around what changed, plus what the links show overall.
+    graph: graph.brief(added.flatMap((f) => f.entities).flatMap((k) => graph.resolve(k)?.id ?? [])).slice(0, 8_000),
+    known: graph.known(),
   };
   const model = getModel(key.provider, key.apiKey, key.model);
   // Same input, same answer. `hash` is the context this result is written for: if it changes mid-run,
