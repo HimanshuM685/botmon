@@ -95,8 +95,14 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
     if (!following) return;
     let live = true;
     async function poll() {
-      const s = await fetch(`${historyUrl}?job=1`).then((r) => r.json()).catch(() => null);
-      if (!live || !s) return; // offline for a moment: ask again next time
+      const res = await fetch(`${historyUrl}?job=1`).catch(() => null);
+      const s = res && (await res.json().catch(() => null));
+      if (!live || !res || !s || res.status >= 500) return; // offline or a hiccup: ask again next time
+      if (res.status === 401) {
+        // Signed out here; the read itself goes on, and this page picks it up again after signing in.
+        setReading(null);
+        return toast.info("You're signed out. The read keeps going; sign in again to follow it.");
+      }
       if (s.job) {
         // Only a wait worth mentioning: a step that's simply due now isn't one.
         const nextAt = s.job.nextAt && new Date(s.job.nextAt).getTime() > Date.now() + 5_000 ? s.job.nextAt : null;

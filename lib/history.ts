@@ -136,13 +136,36 @@ export function planEras(chapters: Range[], maxChars: number): Range[][] {
 export const eraRange = (group: Range[]): Range => ({ fromTs: group[0].fromTs, toTs: group.at(-1)!.toTs, msgCount: group.reduce((n, c) => n + c.msgCount, 0) });
 
 /**
+ * The stored chapters that still cover the chat from its first message on, back to back, as ranges. Stops at the
+ * first one that no longer matches the messages (older messages filled in mid-chat, a chapter missing): from there
+ * the chat is planned again.
+ */
+export function readPrefix(msgs: Msg[], chapters: Range[]): Range[] {
+  const out: Range[] = [];
+  let i = 0;
+  for (const c of [...chapters].sort((a, b) => a.fromTs - b.fromTs)) {
+    const end = i + c.msgCount;
+    if (!msgs[i] || msgs[i].ts !== c.fromTs || end > msgs.length || msgs[end - 1].ts !== c.toTs) break;
+    out.push({ fromTs: c.fromTs, toTs: c.toTs, msgCount: c.msgCount });
+    i = end;
+  }
+  return out;
+}
+
+/**
  * What a chat's history needs, given what is stored: chapters to read, eras to build, and the units a prompt
  * shows (eras where planned, chapters elsewhere). Stored rows that match nothing planned are stale.
  */
 export function historyWork<U extends Unit>(msgs: Msg[], stored: U[], budget: number, tz = 0) {
   const total = msgs.reduce((n, m) => n + lineSize(m), 0);
-  const plan = total <= budget * DIRECT_SHARE ? [] : planChapters(msgs, Math.floor(budget * CHAPTER_SHARE), tz);
   const chapters = stored.filter((u) => u.level === 0);
+  // Chapters already read stay as they are when the budget changes (a learned limit, another model): only the
+  // messages after them are planned with the current size, so nothing read is thrown away and paid for again.
+  const kept = readPrefix(msgs, chapters);
+  const after = kept.length ? msgs.slice(kept.reduce((n, c) => n + c.msgCount, 0)) : msgs;
+  const plan = kept.length
+    ? [...kept, ...planChapters(after, Math.floor(budget * CHAPTER_SHARE), tz)]
+    : total <= budget * DIRECT_SHARE ? [] : planChapters(msgs, Math.floor(budget * CHAPTER_SHARE), tz);
   const eras = stored.filter((u) => u.level > 0);
   const haveChapter = (r: Range) => chapters.find((c) => same(c, r));
   const todo = plan.filter((r) => !haveChapter(r));

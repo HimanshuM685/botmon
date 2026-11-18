@@ -34,9 +34,12 @@ export const getPerson = cache((userId: string, personId: string) =>
   db.person.findFirst({ where: { id: personId, userId, ...alive, user: alive } }),
 ); // cache: the person layout and its page ask for the same row in one request
 
+/** Which row is the person's current chat: the newest not in the trash. For queries that pick their own columns. */
+export const currentChat = (personId: string) => ({ where: { personId, ...alive }, orderBy: { createdAt: "desc" as const } });
+
 /** The person's current chat (not in the trash). */
 export function getChat(personId: string) {
-  return db.chatUpload.findFirst({ where: { personId, ...alive }, orderBy: { createdAt: "desc" } });
+  return db.chatUpload.findFirst(currentChat(personId));
 }
 
 export async function loadChat(cipher: string): Promise<Msg[]> {

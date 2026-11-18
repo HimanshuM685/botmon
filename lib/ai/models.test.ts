@@ -24,10 +24,12 @@ it("lists chat models only, suggested ones first", () => {
   expect(parseModelList("GROQ", { data: [{ id: "whisper-large-v3" }, { id: "llama-3.3-70b-versatile" }, { id: "meta-llama/llama-guard-4-12b" }] })).toEqual(["llama-3.3-70b-versatile"]);
   expect(parseModelList("NIM", null)).toEqual([]);
   const text = { output_modalities: ["text"] };
+  const supported_parameters = ["structured_outputs", "tools", "temperature"];
   expect(parseModelList("OPENROUTER", { data: [
-    { id: "mistralai/mistral-7b-instruct", architecture: text },
-    { id: "google/gemini-image", architecture: { output_modalities: ["image", "text"] } },
-    { id: "anthropic/claude-sonnet-5.5:batch", architecture: text },
-    { id: "anthropic/claude-sonnet-5.5", architecture: text },
+    { id: "mistralai/mistral-7b-instruct", architecture: text, supported_parameters },
+    { id: "google/gemini-image", architecture: { output_modalities: ["image", "text"] }, supported_parameters },
+    { id: "anthropic/claude-sonnet-5.5:batch", architecture: text, supported_parameters },
+    { id: "anthropic/claude-sonnet-5.5", architecture: text, supported_parameters },
+    { id: "some/no-json-model", architecture: text, supported_parameters: ["tools"] },
   ] })).toEqual(["anthropic/claude-sonnet-5.5", "mistralai/mistral-7b-instruct"]);
 });

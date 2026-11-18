@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth/server";
+import { getSession } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { purgeDate } from "@/lib/trash";
 import { restoreAccount } from "@/app/actions";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Account scheduled for deletion" };
 
 export default async function RestoreAccount() {
-  const { data } = await auth.getSession();
+  const { data } = await getSession();
   if (!data?.user) redirect("/");
   const row = await db.user.findUnique({ where: { id: data.user.id }, select: { deletedAt: true } });
   if (!row?.deletedAt) redirect("/dashboard");

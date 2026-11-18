@@ -2,15 +2,16 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { authClient } from "@/lib/auth/client";
 
 /**
- * Sign out through the Neon Auth client (clears the session and the cached session-data cookie),
- * then load "/" fresh so no cached signed-in page from the client router can come back.
- * Returns false (and toasts) if sign-out failed; the page stays put in that case.
+ * Sign out on the server (app/api/sign-out: ends the session and expires every auth cookie), then load "/" fresh so
+ * no cached signed-in page from the client router can come back.
+ * Returns false (and toasts) if the request didn't get through; the page stays put in that case.
  */
 export async function signOutAndReload({ serverSignedOut = false } = {}): Promise<boolean> {
-  const res = await authClient.signOut().catch((e: Error) => ({ error: e }));
+  const res = await fetch("/api/sign-out", { method: "POST", cache: "no-store" })
+    .then((r) => (r.ok ? null : { error: new Error(`HTTP ${r.status}`) }))
+    .catch((e: Error) => ({ error: e }));
   // When the server already ended the session (account deletion), a client-side failure only
   // leaves a short-lived cached cookie behind, so reload anyway.
   if (res?.error && !serverSignedOut) {

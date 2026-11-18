@@ -14,6 +14,7 @@ import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
 import { learnFromChat, loadSelf, promoteMeEdges, selfChanged } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { historyFor } from "@/lib/history-store";
+import type { Msg } from "@/lib/parsers/types";
 
 /** Memories last changed before this could not have had a feeling set or cleared by the user (migration memory_feeling). */
 const FEELINGS_SINCE = new Date("2026-11-16T00:00:00Z");
@@ -29,7 +30,8 @@ export type ReadRefusal = { error: string; status: number; code?: string; todo?:
  * Everything a read of the person's current chat needs, shared by the streamed read (analyze route) and the
  * background one (lib/read/job.ts): the model call to make, and `finish` to save what it answered.
  */
-export async function prepareRead(userId: string, person: Person, chat: Chat, key: Key, full: boolean) {
+/** `loaded`: the chat's messages when the caller has already decrypted them. */
+export async function prepareRead(userId: string, person: Person, chat: Chat, key: Key, full: boolean, loaded?: Msg[]) {
   // Latest read of this chat: the base for an incremental read, or a stability anchor for a full re-read.
   const last = await db.analysis.findFirst({
     where: { personId: person.id, chatId: chat.id, deletedAt: null, result: { not: Prisma.DbNull }, throughAt: { not: null } },
@@ -44,7 +46,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
 
   // Long chats are read whole: every period before the newest stretch must be read (lib/read/job.ts) first,
   // so a read never silently skips months.
-  const msgs = await loadChat(chat.cipher);
+  const msgs = loaded ?? (await loadChat(chat.cipher));
   const budget = budgetFor(key);
   const history = await historyFor(chat, msgs, budget);
   if (!history.ready)
@@ -95,7 +97,6 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
     history: history.text || undefined,
     historyTo: history.to,
   });
-  const newMessages = prev ? msgs.filter((m) => m.ts > prev.throughAt!.getTime()).length : msgs.length;
 
   // The chat was removed or moved to another person while this read ran (removeChat / moveChat).
   const chatStillHere = () => db.chatUpload.findFirst({ where: { id: chat.id, personId: person.id, deletedAt: null }, select: { id: true } });
@@ -171,8 +172,6 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
   }
 
   return {
-    mode,
-    newMessages,
     runId: run.id,
     // Same chat, same answer: greedy sampling, plus a per-chat seed where the provider supports one.
     call: { system: SYSTEM, prompt, temperature: 0, seed: seedFor(chat.id) },

@@ -19,6 +19,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // Incremental by default: the job reuses the last read of this chat and sends only messages after it.
   const mode = ((await req.json().catch(() => null)) as { mode?: string } | null)?.mode === "full" ? "full" : "auto";
-  if (!chat.readMode) await startRead(new URL(req.url).origin, chat.id, mode); // else: already reading
+  // A read already going keeps going, in the mode asked for now (restarted if its chain broke).
+  await startRead(new URL(req.url).origin, chat, mode);
   return Response.json({ background: true }, { status: 202 });
 }

@@ -3,8 +3,10 @@ import { createGoogle } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
 import { createGroq } from "@ai-sdk/groq";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { wrapLanguageModel } from "ai";
 import type { ProviderId } from "./models";
-import { rateLimit, retryable } from "./limits";
+import { NO_QUOTA, rateLimit, retryable } from "./limits";
 
 export function getModel(provider: ProviderId, apiKey: string, model: string) {
   switch (provider) {
@@ -19,7 +21,13 @@ export function getModel(provider: ProviderId, apiKey: string, model: string) {
     case "NIM":
       return createOpenAI({ apiKey, baseURL: "https://integrate.api.nvidia.com/v1" }).chat(model);
     case "OPENROUTER":
-      return createOpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1" }).chat(model);
+      // OpenRouter load-balances each call across hosts; without require_parameters some hosts silently ignore
+      // response_format/tools, so JSON reads fail at random. ponytail: seed is dropped because some hosts (Anthropic)
+      // don't take it and require_parameters would then find none; reads there are a little less repeatable.
+      return wrapLanguageModel({
+        model: createOpenRouter({ apiKey })(model, { provider: { require_parameters: true } }),
+        middleware: { transformParams: async ({ params }) => ({ ...params, seed: undefined }) },
+      });
   }
 }
 
@@ -28,6 +36,8 @@ export function providerError(e: unknown): string {
   const status = (e as { statusCode?: number })?.statusCode;
   if (status === 401 || status === 403 || /api key|unauthori[sz]ed|permission|invalid.*key/i.test(msg))
     return "Your AI key was rejected. Update it in Settings.";
+  if (NO_QUOTA.test(`${msg} ${(e as { lastError?: { message?: string } })?.lastError?.message ?? ""} ${(e as { responseBody?: string })?.responseBody ?? ""}`))
+    return "Your AI key has no quota or credits left. Add billing with your provider or switch provider in Settings.";
   const limit = rateLimit(e);
   if (limit?.tooBigFor)
     return `This chat is too big for one call within your key's rate limit (${limit.tooBigFor.toLocaleString("en")} tokens per minute). It's read in smaller parts from now on; try again.`;
@@ -38,6 +48,8 @@ export function providerError(e: unknown): string {
   if (failure?.kind === "output") return "Your AI model returned an answer that couldn't be read. It's tried again automatically.";
   if (/context|too long|maximum.*tokens|token limit|tokens per minute|request too large/i.test(msg))
     return "This chat is too long for the selected model. Pick a bigger-context model (Gemini) in Settings.";
+  if (/no endpoints found/i.test(msg))
+    return "No OpenRouter host for this model supports structured answers. Pick another model in Settings.";
   if (status === 404 || /model.*not found|does not exist/i.test(msg))
     return "That model isn't available for your key. Choose another model in Settings.";
   return `AI provider error: ${msg.slice(0, 160)}`;

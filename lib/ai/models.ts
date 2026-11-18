@@ -97,11 +97,12 @@ const MAX_LISTED = 1000;
  * a new kind of non-chat model shows up in the dropdown until its name is added to NOT_CHAT.
  */
 export function parseModelList(provider: ProviderId, json: unknown): string[] {
-  const body = json as { models?: { name?: string; supportedGenerationMethods?: string[] }[]; data?: { id?: string; architecture?: { output_modalities?: string[] } }[] } | null;
-  // OpenRouter says what each model outputs, so no name guessing there; `:batch` ids are batch-only.
+  const body = json as { models?: { name?: string; supportedGenerationMethods?: string[] }[]; data?: { id?: string; architecture?: { output_modalities?: string[] }; supported_parameters?: string[] }[] } | null;
+  // OpenRouter says what each model outputs and takes, so no name guessing there; `:batch` ids are batch-only.
+  // Reads need structured outputs and coaching needs tools, so models without both are left out.
   const ids =
     provider === "OPENROUTER"
-      ? (body?.data ?? []).filter((m) => m.architecture?.output_modalities?.join() === "text" && !m.id?.endsWith(":batch")).map((m) => m.id)
+      ? (body?.data ?? []).filter((m) => m.architecture?.output_modalities?.join() === "text" && !m.id?.endsWith(":batch") && ["structured_outputs", "tools"].every((p) => m.supported_parameters?.includes(p))).map((m) => m.id)
       : provider === "GEMINI"
       ? (body?.models ?? []).filter((m) => m.supportedGenerationMethods?.includes("generateContent")).map((m) => m.name?.replace(/^models\//, ""))
       : (body?.data ?? []).map((m) => m.id);

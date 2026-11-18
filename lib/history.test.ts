@@ -77,3 +77,19 @@ it("history shows the newest periods in full and older ones as summaries when sp
   expect(tight.indexOf("Moments:")).toBeGreaterThan(tight.indexOf("phase 3"));
   expect(tight).toContain("phase 1");
 });
+
+it("a smaller budget keeps the chapters already read and plans only the rest", () => {
+  const msgs = chat(400);
+  const big = historyWork(msgs, [], 150_000);
+  // The first half was read with the big budget.
+  const read: Unit[] = big.plan.slice(0, Math.floor(big.plan.length / 2)).map((r) => ({ ...r, level: 0, result: { phase: "p", summary: "s" } as Unit["result"] }));
+  const small = historyWork(msgs, read, 60_000);
+  expect(small.stale).toEqual([]);
+  expect(small.plan.slice(0, read.length)).toEqual(read.map(({ fromTs, toTs, msgCount }) => ({ fromTs, toTs, msgCount })));
+  expect(small.todo.length).toBe(small.plan.length - read.length);
+  // Every message is still in exactly one chapter or the rest after them.
+  expect(small.plan.reduce((n, c) => n + c.msgCount, 0) + afterHistory(msgs, small.plan).length).toBe(msgs.length);
+  // Older messages filled in before the first chapter: those chapters no longer match, and are planned again.
+  const earlier = [{ sender: "Me", text: "older", ts: msgs[0].ts - DAY }, ...msgs];
+  expect(historyWork(earlier, read, 60_000).stale.length).toBe(read.length);
+});

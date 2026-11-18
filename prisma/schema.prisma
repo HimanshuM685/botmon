@@ -165,6 +165,8 @@ model ChatUpload {
   historyLockUntil DateTime?
   /// Background read in progress (lib/read/job.ts): "auto" | "full"; null when none
   readMode    String?
+  /// Id of the background read in progress: a step only writes to the job it started in
+  readJob     String?
   /// Rate limited: the next step waits until then
   readNextAt  DateTime?
   /// Why the last background read stopped

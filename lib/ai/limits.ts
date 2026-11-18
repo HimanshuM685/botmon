@@ -18,26 +18,48 @@ function duration(s: string): number | undefined {
   return any ? Math.ceil(ms) : undefined;
 }
 
+/** The AI SDK wraps the last attempt in a RetryError. */
+const unwrap = (e: unknown) => ((e as ErrLike)?.lastError ?? e) as ErrLike & { name?: string; isRetryable?: boolean; cause?: { name?: string } };
+const textOf = (err: ErrLike, e: unknown) => `${err?.message ?? e} ${err?.responseBody ?? ""}`;
+
+/** How long the provider's headers say to wait, in ms, if they say. */
+function headerWait(err: ErrLike, now = Date.now()): number | undefined {
+  const h = Object.fromEntries(Object.entries(err?.responseHeaders ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const ms = Number(h["retry-after-ms"]);
+  if (ms > 0) return ms;
+  const s = Number(h["retry-after"]);
+  if (s > 0) return s * 1000;
+  // OpenRouter: when the limit resets, as epoch ms (or seconds).
+  const reset = Number(h["x-ratelimit-reset"]);
+  if (reset > 1e9) {
+    const wait = (reset > 1e12 ? reset : reset * 1000) - now;
+    if (wait > 0 && wait < 2 * 24 * HOUR) return wait;
+  }
+  return undefined;
+}
+
+/** A key with no money or quota at all: a 429 that waiting never lifts. */
+export const NO_QUOTA = /insufficient_quota|check your plan and billing|billing details|out of credits|insufficient credits|credit balance/i;
+
 export function rateLimit(e: unknown): Limit | null {
-  // The AI SDK wraps the last attempt in a RetryError.
-  const err = ((e as ErrLike)?.lastError ?? e) as ErrLike;
-  const text = `${err?.message ?? e} ${err?.responseBody ?? ""}`;
+  const err = unwrap(e);
+  const text = textOf(err, e);
   const status = err?.statusCode;
   const perMinute = /tokens per min(?:ute)?|\bTPM\b/i.test(text);
+  if (NO_QUOTA.test(text)) return null;
   if (!(status === 429 || (status === 413 && perMinute) || /quota|rate.?limit|resource.?exhausted/i.test(text))) return null;
 
   // "Limit 30000, Used 25000, Requested 8000": only too big when the request alone is over the limit.
   const m = perMinute ? text.match(/Limit:?\s*(\d+)[^.]*?Requested:?\s*(\d+)/i) : null;
   const tooBigFor = m && Number(m[2]) > Number(m[1]) ? Number(m[1]) : undefined;
 
-  const h = Object.fromEntries(Object.entries(err?.responseHeaders ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const hinted =
-    (h["retry-after-ms"] && Number(h["retry-after-ms"])) ||
-    (h["retry-after"] && Number(h["retry-after"]) * 1000) ||
+    headerWait(err) ||
     duration(text.match(/try again in\s*([\d.hms]+)/i)?.[1] ?? "") ||
     duration(text.match(/"retryDelay":\s*"([\d.]+s)"/)?.[1] ?? "");
   // Daily caps (tokens or requests per day) don't lift in a minute.
-  const daily = /per day|\bTPD\b|\bRPD\b|PerDay/i.test(text);
+  // OpenRouter says "free-models-per-day".
+  const daily = /per.?day|daily|\bTPD\b|\bRPD\b/i.test(text);
   const waitMs = hinted && Number.isFinite(hinted) ? Math.max(1000, hinted) : daily ? HOUR : MINUTE;
   return { waitMs, tooBigFor };
 }
@@ -58,7 +80,7 @@ const OUTPUT_ERRORS = /^AI_(NoObjectGenerated|NoOutputGenerated|NoContentGenerat
 const BUSY = /overloaded|high demand|unavailable|temporar|capacity|try again|timed? ?out|fetch failed|network|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|terminated|bad gateway|gateway/i;
 
 export function retryable(e: unknown): Failure | null {
-  const err = ((e as ErrLike)?.lastError ?? e) as ErrLike & { name?: string; isRetryable?: boolean; cause?: { name?: string } };
+  const err = unwrap(e);
   const status = err?.statusCode;
   const rate = rateLimit(e);
   if (rate) return { ...rate, kind: "rate" };
@@ -68,11 +90,7 @@ export function retryable(e: unknown): Failure | null {
   // whatever its text says ("unavailable", "try again with another model").
   if (status && status >= 400 && status < 500 && status !== 408) return null;
   if (OUTPUT_ERRORS.test(err?.name ?? "") || OUTPUT_ERRORS.test(err?.cause?.name ?? "")) return { waitMs: 5_000, kind: "output" };
-  if ((status && (status >= 500 || status === 408)) || err?.isRetryable || BUSY.test(`${err?.message ?? e} ${err?.responseBody ?? ""}`)) {
-    const h = Object.fromEntries(Object.entries(err?.responseHeaders ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
-    const hinted = Number(h["retry-after"]) * 1000;
-    return { waitMs: Number.isFinite(hinted) && hinted > 0 ? hinted : 0, kind: "busy" };
-  }
+  if ((status && (status >= 500 || status === 408)) || err?.isRetryable || BUSY.test(textOf(err, e))) return { waitMs: headerWait(err) ?? 0, kind: "busy" };
   return null;
 }
 
@@ -83,6 +101,11 @@ export const backoffMs = (tries: number, hintMs = 0) => Math.max(hintMs, Math.mi
 export const BUSY_TRIES = 28;
 /** A model that answers broken JSON this many times in a row won't get better by itself. */
 export const OUTPUT_TRIES = 4;
+/**
+ * Rate limits in a row, with no step getting through, before the limit counts as one that won't lift (a quota
+ * without the words that say so). Waits follow the provider: an hour each for daily caps, so this is about two days.
+ */
+export const RATE_TRIES = 48;
 
 /** Failures in a row, counted apart: an overloaded model and unreadable answers each have their own limit. */
 export type Tries = { busy: number; bad: number };
@@ -90,7 +113,11 @@ export type Wait = "rate" | "busy" | "output";
 
 /** What to do after a failed step: wait (and why) and try again, or stop. */
 export function afterFailure(f: Failure, tries: Tries): { waitMs: number; tries: Tries; reason: Wait } | { fail: string } {
-  if (f.kind === "rate") return { waitMs: f.waitMs, tries, reason: "rate" }; // not counted: a daily cap legitimately takes long
+  // Counted with the overloads (failures in a row of a provider that isn't answering), but allowed far more.
+  if (f.kind === "rate")
+    return tries.busy + 1 > RATE_TRIES
+      ? { fail: "Your AI provider's rate limit or quota hasn't lifted for days. Check your plan or switch provider in Settings. Everything read so far is kept." }
+      : { waitMs: f.waitMs, tries: { ...tries, busy: tries.busy + 1 }, reason: "rate" };
   if (f.kind === "output")
     return tries.bad + 1 >= OUTPUT_TRIES
       ? { fail: "Your model keeps returning answers that can't be read. Pick a stronger model in Settings and try again. Everything read so far is kept." }

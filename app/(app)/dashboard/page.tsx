@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { alive } from "@/lib/trash";
 import { Prisma } from "@/generated/prisma/client";
 import { MAX_PEOPLE } from "@/lib/data";
+import { requestOrigin, resumeIfStalled } from "@/lib/read/job";
 import { RELATIONS, timeAgo } from "@/lib/labels";
 import { PersonForm } from "@/components/person-form";
 import type { Analysis } from "@/lib/ai/schema";
@@ -19,12 +20,17 @@ export default async function Dashboard() {
       where: { userId: user.id, ...alive },
       orderBy: { createdAt: "asc" },
       include: {
-        chats: { where: alive, select: { msgCount: true, lastAt: true, readMode: true }, orderBy: { createdAt: "desc" }, take: 1 },
+        chats: { where: alive, select: { id: true, msgCount: true, lastAt: true, readMode: true, readNextAt: true, historyLockUntil: true }, orderBy: { createdAt: "desc" }, take: 1 },
         analyses: { where: { ...alive, result: { not: Prisma.DbNull } }, select: { result: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
       },
     }),
   ]);
   if (!keyCount) redirect("/onboarding");
+  // A background read whose chain broke (a deploy, a crash) starts again from here too, not only from its person's page.
+  if (people.some((p) => p.chats[0]?.readMode)) {
+    const origin = await requestOrigin();
+    for (const p of people) if (p.chats[0]) resumeIfStalled(origin, p.chats[0]);
+  }
 
   return (
     <div className="space-y-10">

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { afterFailure, backoffMs, BUSY_TRIES, charsFor, OUTPUT_TRIES, rateLimit, retryable } from "./limits";
+import { afterFailure, backoffMs, BUSY_TRIES, charsFor, OUTPUT_TRIES, RATE_TRIES, rateLimit, retryable } from "./limits";
 
 it("reads an OpenAI request too big for the key's TPM", () => {
   const e = { statusCode: 429, message: "Request too large for gpt-5.5 in organization org-x on tokens per min (TPM): Limit 30000, Requested 52000. The input or output tokens must be reduced." };
@@ -45,9 +45,22 @@ it("backs off, then gives up", () => {
   expect(afterFailure({ kind: "output", waitMs: 5_000 }, { busy: 0, bad: OUTPUT_TRIES - 1 })).toHaveProperty("fail");
   // Overloads before don't use up the tries for unreadable answers.
   expect(afterFailure({ kind: "output", waitMs: 5_000 }, { busy: 3, bad: 0 })).toEqual({ waitMs: 5_000, tries: { busy: 3, bad: 1 }, reason: "output" });
-  expect(afterFailure({ kind: "rate", waitMs: 3_600_000 }, { busy: 5, bad: 1 })).toEqual({ waitMs: 3_600_000, tries: { busy: 5, bad: 1 }, reason: "rate" });
+  expect(afterFailure({ kind: "rate", waitMs: 3_600_000 }, { busy: 5, bad: 1 })).toEqual({ waitMs: 3_600_000, tries: { busy: 6, bad: 1 }, reason: "rate" });
+  expect(afterFailure({ kind: "rate", waitMs: 60_000 }, { busy: RATE_TRIES, bad: 0 })).toHaveProperty("fail");
   // Total wait before giving up on a busy model: about 6 hours.
   const total = Array.from({ length: BUSY_TRIES }, (_, t) => backoffMs(t)).reduce((a, b) => a + b, 0);
   expect(total / 3_600_000).toBeGreaterThan(5.5);
   expect(total / 3_600_000).toBeLessThan(7);
+});
+
+it("stops at once on a key with no quota, and waits out daily caps", () => {
+  const e = { statusCode: 429, message: "You exceeded your current quota, please check your plan and billing details." };
+  expect(rateLimit(e)).toBeNull();
+  expect(retryable(e)).toBeNull();
+  expect(rateLimit({ statusCode: 429, message: "Rate limit exceeded: free-models-per-day" })?.waitMs).toBe(3_600_000);
+  // OpenRouter's reset time, epoch ms.
+  const reset = Date.now() + 120_000;
+  const w = rateLimit({ statusCode: 429, message: "Rate limit exceeded: free-models-per-day", responseHeaders: { "X-RateLimit-Reset": String(reset) } })!.waitMs;
+  expect(w).toBeGreaterThan(110_000);
+  expect(w).toBeLessThanOrEqual(120_000);
 });

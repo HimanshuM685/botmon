@@ -1,7 +1,6 @@
 import { getUserId } from "@/lib/auth/server";
-import { getActiveKey, getChat, getPerson } from "@/lib/data";
+import { currentChat, getActiveKey, getChat, getPerson } from "@/lib/data";
 import { db } from "@/lib/db";
-import { alive } from "@/lib/trash";
 import { JOB_FIELDS, jobStatus, readStatus, resumeIfStalled } from "@/lib/read/job";
 
 /**
@@ -16,7 +15,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // ?job=1: the page following a read, every few seconds. Only the job's own columns: no key to decrypt, and not
   // the chat itself, which can be tens of MB.
   if (new URL(req.url).searchParams.has("job")) {
-    const row = await db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, select: JOB_FIELDS });
+    const row = await db.chatUpload.findFirst({ ...currentChat(person.id), select: JOB_FIELDS });
     if (!row) return Response.json({ job: null, failed: null, gone: true });
     resumeIfStalled(new URL(req.url).origin, row);
     return Response.json(jobStatus(row));

@@ -1,6 +1,6 @@
 "use server";
 
-import { generateText } from "ai";
+import { generateText, Output } from "ai";
 import { factsFromAnalysis, newFacts, toEntities, toFeeling, toValence } from "@/lib/facts";
 import { loadUnits } from "@/lib/history-store";
 import { cancelRead } from "@/lib/read/job";
@@ -12,10 +12,10 @@ import { SELF_KINDS } from "@/lib/ai/schema";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { auth, requireUser } from "@/lib/auth/server";
+import { auth, getSession, requireUser } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
-import { MAX_PEOPLE, getActiveKey, getPerson } from "@/lib/data";
+import { MAX_PEOPLE, currentChat, getActiveKey, getPerson } from "@/lib/data";
 import { alive } from "@/lib/trash";
 import { MODELS_URL, parseModelList, PROVIDER_IDS, type ProviderId } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
@@ -97,6 +97,10 @@ export async function listSavedModels(providerInput: string): Promise<{ models?:
   return { ...(await fetchModels(provider.data, k.apiKey)), current: k.model };
 }
 
+/** One tiny structured call, the way reads and analyses call: a model that can only chat in plain text fails here, not mid-read. */
+const checkModel = (provider: ProviderId, apiKey: string, model: string) =>
+  generateText({ model: getModel(provider, apiKey, model), output: Output.object({ schema: z.object({ ok: z.boolean() }) }), prompt: 'Reply with {"ok": true}.', maxRetries: 0 });
+
 /** Switch a saved key to another model. Checked with one tiny call first, so a model the key can't use is never saved. */
 export async function setKeyModel(providerInput: string, modelInput: string): Promise<ActionState> {
   const user = await requireUser();
@@ -107,7 +111,7 @@ export async function setKeyModel(providerInput: string, modelInput: string): Pr
   if (!k) return { error: "No saved key for this provider" };
   if (k.model === model) return { ok: true };
   try {
-    await generateText({ model: getModel(provider, k.apiKey, model), prompt: "Reply with OK.", maxOutputTokens: 16, maxRetries: 0 });
+    await checkModel(provider, k.apiKey, model);
   } catch (e) {
     return { error: providerError(e) };
   }
@@ -138,7 +142,7 @@ export async function saveKey(_: ActionState, form: FormData): Promise<ActionSta
   const { provider, apiKey, model } = parsed.data;
 
   try {
-    await generateText({ model: getModel(provider, apiKey, model), prompt: "Reply with OK.", maxOutputTokens: 16, maxRetries: 0 });
+    await checkModel(provider, apiKey, model);
   } catch (e) {
     return { error: providerError(e) };
   }
@@ -194,7 +198,7 @@ export async function deleteAccount(): Promise<ActionState> {
 /* ---------- 30-day trash ---------- */
 
 export async function restoreAccount() {
-  const { data } = await auth.getSession();
+  const { data } = await getSession();
   if (!data?.user) redirect("/");
   await db.user.update({ where: { id: data.user.id }, data: { deletedAt: null } });
   redirect("/dashboard");
@@ -389,7 +393,8 @@ export async function moveChat(chatId: string, toPersonId: string): Promise<Acti
     ...(await detachChat(chat, now)),
     db.chatUpload.updateMany({ where: { personId: to.id, deletedAt: null }, data: { deletedAt: now } }),
     // Removing it from the new person brings back the chat it replaced there.
-    db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, replacedId: theirs?.id ?? null } }),
+    // A background read of it stops: it was asked for the other person (a step still running finds its job gone).
+    db.chatUpload.update({ where: { id: chat.id }, data: { personId: to.id, replacedId: theirs?.id ?? null, readMode: null, readJob: null, readNextAt: null, readWait: null } }),
     ...again.queries,
   ]);
   await Promise.all([pruneGraph(chat.personId), rebuildMemories(to, again.reads, chat.id)]);
@@ -512,7 +517,7 @@ export async function renameThread(id: string, title: string): Promise<ActionSta
 export async function stopRead(personId: string): Promise<ActionState> {
   const user = await requireUser();
   const person = await getPerson(user.id, personId);
-  const chat = person && (await db.chatUpload.findFirst({ where: { personId: person.id, ...alive }, orderBy: { createdAt: "desc" }, select: { id: true } }));
+  const chat = person && (await db.chatUpload.findFirst({ ...currentChat(person.id), select: { id: true } }));
   if (!chat) return { error: "Not found" };
   await cancelRead(chat.id);
   return { ok: true };
