@@ -1,5 +1,6 @@
 import { getUserId } from "@/lib/auth/server";
-import { getActiveKey, getChat, getPerson } from "@/lib/data";
+import { currentChat, getActiveKey, getPerson } from "@/lib/data";
+import { db } from "@/lib/db";
 import { startRead } from "@/lib/read/job";
 
 /**
@@ -13,7 +14,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const person = await getPerson(userId, (await params).id);
   if (!person) return Response.json({ error: "Not found" }, { status: 404 });
 
-  const [key, chat] = await Promise.all([getActiveKey(userId), getChat(person.id)]);
+  const [key, chat] = await Promise.all([getActiveKey(userId), db.chatUpload.findFirst({ ...currentChat(person.id), select: { id: true, readMode: true, readNextAt: true, historyLockUntil: true } })]); // not the chat itself: tens of MB
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
   if (!chat) return Response.json({ error: "Upload a chat first" }, { status: 400 });
 

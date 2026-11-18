@@ -38,6 +38,7 @@ const STALLED_MS = 90_000;
 /** Below this many chars per call the chat can't be read usefully on this key. */
 const MIN_BUDGET = 8_000;
 
+const rssMb = () => Math.round(process.memoryUsage().rss / 1e6);
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 const day = (ts: number, tz: number) => toLocal(ts, tz).toISOString().slice(0, 10);
 const inRange = (msgs: { ts: number }[], r: Range) => msgs.filter((m) => m.ts >= r.fromTs && m.ts <= r.toTs) as Parameters<typeof buildChapterPrompt>[0]["msgs"];
@@ -132,6 +133,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
   const due = (at: Date, readWait: string, tries?: Tries) => mine({ readNextAt: at, readWait, ...(tries ? { readTries: tries.busy, readBadTries: tries.bad, readRateTries: tries.rate ?? 0 } : {}) });
 
   const startedAt = Date.now();
+  const secs = () => Math.round((Date.now() - startedAt) / 1000);
   // Started just before each model call, so loading a long chat doesn't eat the model's time.
   const callSignal = () => AbortSignal.timeout(Math.max(30_000, STEP_CALLS_MS - (Date.now() - startedAt)));
   let key: Awaited<ReturnType<typeof getActiveKey>> = null;
@@ -225,10 +227,12 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         throw e;
       }
       await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readPartsDone: parts });
+      console.info(`read job: read saved in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
       scheduleGraphJob(person.userId, person);
       return {};
     }
     // A step done: failures start counting again, and the page sees the progress (one more part read).
+    console.info(`read job: ${r ? "chapter" : "era"} done, part ${parts - work.todo.length - work.eraTodo.length + 1}/${parts} in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
     await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: parts - work.todo.length - work.eraTodo.length + 1 });
     return { again: 0 };
   } catch (e) {
