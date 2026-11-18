@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { toast } from "sonner";
@@ -345,7 +347,13 @@ function Message({ m, persona }: { m: UIMessage; /** Set in a rehearsal: replies
       <div className={`max-w-[85%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-relaxed ${mine ? "rounded-br-md bg-heart text-ink" : simulated ? "rounded-bl-md border border-dashed border-amber/60 bg-ink-2" : "rounded-bl-md bg-ink-3"}`}>
         {simulated && <p className="text-[10px] uppercase tracking-wide text-amber">Simulated {persona.split(" ")[0]}</p>}
         {m.parts.map((p, i) => {
-          if (p.type === "text") return <p key={i} className="whitespace-pre-wrap">{p.text}</p>;
+          if (p.type === "text")
+            return mine ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : (
+              // Replies are Markdown; raw HTML in them is shown as text, never run.
+              <div key={i} className="md">
+                <Markdown remarkPlugins={[remarkGfm]} components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" /> }}>{p.text}</Markdown>
+              </div>
+            );
           if (p.type === "tool-remember" && p.state === "output-available") {
             const out = p.output as { saved?: boolean; text?: string };
             return out?.saved ? <p key={i} className="chip border-mint/40 text-mint">Saved to timeline: {out.text}</p> : null;
