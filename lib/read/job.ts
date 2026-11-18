@@ -56,7 +56,7 @@ export function validToken(chatId: string, token: string | null) {
  */
 export async function chain(origin: string, chatId: string, delayMs = 0, startedAt = Date.now()) {
   await sleep(Math.max(0, Math.min(delayMs, STEP_MAX_MS - 30_000 - (Date.now() - startedAt))));
-  const res = await fetch(`${origin}/api/jobs/read`, {
+  const res = await fetch(`${appOrigin(origin)}/api/jobs/read`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${jobToken(chatId)}` },
     body: JSON.stringify({ chatId }),
@@ -79,12 +79,20 @@ export async function startRead(origin: string, chat: { id: string; readMode: st
     if (chat.readMode !== mode) await db.chatUpload.updateMany({ where: { id: chat.id, readMode: { not: null } }, data: { readMode: mode } });
     return resumeIfStalled(origin, chat);
   }
-  await db.chatUpload.update({ where: { id: chat.id }, data: { readMode: mode, readJob: newJob(), readNextAt: new Date(), readError: null, readTries: 0, readBadTries: 0, readWait: null, readParts: null, readPartsDone: null } });
+  await db.chatUpload.update({ where: { id: chat.id }, data: { readMode: mode, readJob: newJob(), readNextAt: new Date(), readError: null, readTries: 0, readBadTries: 0, readRateTries: 0, readWait: null, readParts: null, readPartsDone: null } });
   kick(origin, chat.id);
 }
 
 /** Stop the read. A step still running finds its job gone and writes nothing more about it. */
 export const cancelRead = (chatId: string) => db.chatUpload.update({ where: { id: chatId }, data: { readMode: null, readJob: null, readNextAt: null, readWait: null } });
+
+/**
+ * Where the job token is sent. Never taken from request headers when the deployment says its own URL: a forged
+ * Host or X-Forwarded-Host would otherwise get the server to send a valid token anywhere. APP_URL overrides;
+ * Netlify gives the production URL, or the branch URL on previews. Locally, the request's origin.
+ */
+export const appOrigin = (fallback: string) =>
+  (process.env.APP_URL || (process.env.CONTEXT === "production" ? process.env.URL : process.env.DEPLOY_PRIME_URL) || fallback).replace(/\/$/, "");
 
 /** This request's own origin, read before `after()` (which can't read headers in a page). */
 export async function requestOrigin() {
@@ -106,6 +114,8 @@ const QUICK_RETRIES = 3;
  * the chain until someone opens the page. Timed out: retried, with smaller parts after the second time.
  */
 const STEP_CALLS_MS = STEP_MAX_MS - 100_000;
+/** Times in a row a read may find its history changed under it before it stops. */
+const HISTORY_TRIES = 3;
 
 /** Run one step of the chat's background read. `again`: ms until the next step; undefined when the chain stops here. */
 export async function step(chatId: string): Promise<{ again?: number }> {
@@ -119,7 +129,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
   const job = chat.readJob;
   const mine = (data: Prisma.ChatUploadUpdateManyMutationInput) => db.chatUpload.updateMany({ where: { id: chat.id, readJob: job }, data });
   const fail = (error: string) => mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readError: error });
-  const due = (at: Date, readWait: string, tries?: Tries) => mine({ readNextAt: at, readWait, ...(tries ? { readTries: tries.busy, readBadTries: tries.bad } : {}) });
+  const due = (at: Date, readWait: string, tries?: Tries) => mine({ readNextAt: at, readWait, ...(tries ? { readTries: tries.busy, readBadTries: tries.bad, readRateTries: tries.rate ?? 0 } : {}) });
 
   const startedAt = Date.now();
   // Started just before each model call, so loading a long chat doesn't eat the model's time.
@@ -184,7 +194,11 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         if (code === "up_to_date") return (await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null }), {});
         if (code === "hourly") return (await due(new Date(Date.now() + 600_000), "hourly"), { again: 600_000 });
         // The history changed under this step (a new export merged in): plan it again next step.
-        if (code === "history_needed") return (await due(new Date(), "busy"), { again: 0 });
+        if (code === "history_needed") {
+          // Counted, so a history that never settles can't chain steps back to back forever.
+          if (chat.readTries + 1 > HISTORY_TRIES) return (await fail("This chat's history couldn't be planned. Start the read again."), {});
+          return (await due(new Date(Date.now() + 5_000), "busy", { busy: chat.readTries + 1, bad: chat.readBadTries, rate: chat.readRateTries }), { again: 5_000 });
+        }
         return (await fail(error), {});
       }
       // sampling(chat.id) keeps read.call's seed (seedFor(chat.id)) until an unreadable answer loosens it.
@@ -210,12 +224,12 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         await selfChanged(person.userId).catch(() => undefined);
         throw e;
       }
-      await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readPartsDone: parts });
+      await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readPartsDone: parts });
       scheduleGraphJob(person.userId, person);
       return {};
     }
     // A step done: failures start counting again, and the page sees the progress (one more part read).
-    await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readParts: parts, readPartsDone: parts - work.todo.length - work.eraTodo.length + 1 });
+    await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: parts - work.todo.length - work.eraTodo.length + 1 });
     return { again: 0 };
   } catch (e) {
     const failure = retryable(e);
@@ -231,7 +245,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
     // answer alone may just be a busy moment, and parts already read are kept either way).
     if (failure?.kind === "slow" && key && chat.readTries > 0 && Math.floor(budgetFor(key) * 0.7) >= MIN_BUDGET)
       await db.apiKey.update({ where: { id: key.id }, data: { charBudget: Math.floor(budgetFor(key) * 0.7) } });
-    const next = failure && afterFailure(failure, { busy: chat.readTries, bad: chat.readBadTries });
+    const next = failure && afterFailure(failure, { busy: chat.readTries, bad: chat.readBadTries, rate: chat.readRateTries });
     if (next && "waitMs" in next) {
       console.info(`read job: ${failure!.kind}, waiting ${Math.round(next.waitMs / 1000)}s`, next.tries, key?.provider, key?.model, (e as Error)?.message?.slice(0, 160));
       await due(new Date(Date.now() + next.waitMs), next.reason, next.tries);

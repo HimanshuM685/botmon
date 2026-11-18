@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 
 import { cookies, headers } from "next/headers";
 import { createAuthServer, extractNeonAuthCookies } from "@neon/auth/server";
-import { auth } from "./neon";
+import { auth, NEON_AUTH } from "./neon";
 
 export { auth };
 
@@ -16,8 +16,7 @@ export { auth };
  * session still reads, and the auth middleware (proxy.ts) and the next server action or API call save the refresh.
  */
 const pageSafe = createAuthServer({
-  baseUrl: process.env.NEON_AUTH_BASE_URL!,
-  cookieSecret: process.env.NEON_AUTH_COOKIE_SECRET!,
+  ...NEON_AUTH,
   context: async () => {
     const [jar, h] = await Promise.all([cookies(), headers()]);
     return {

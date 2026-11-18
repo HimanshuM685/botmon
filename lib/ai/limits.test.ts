@@ -45,8 +45,10 @@ it("backs off, then gives up", () => {
   expect(afterFailure({ kind: "output", waitMs: 5_000 }, { busy: 0, bad: OUTPUT_TRIES - 1 })).toHaveProperty("fail");
   // Overloads before don't use up the tries for unreadable answers.
   expect(afterFailure({ kind: "output", waitMs: 5_000 }, { busy: 3, bad: 0 })).toEqual({ waitMs: 5_000, tries: { busy: 3, bad: 1 }, reason: "output" });
-  expect(afterFailure({ kind: "rate", waitMs: 3_600_000 }, { busy: 5, bad: 1 })).toEqual({ waitMs: 3_600_000, tries: { busy: 6, bad: 1 }, reason: "rate" });
-  expect(afterFailure({ kind: "rate", waitMs: 60_000 }, { busy: RATE_TRIES, bad: 0 })).toHaveProperty("fail");
+  expect(afterFailure({ kind: "rate", waitMs: 3_600_000 }, { busy: 5, bad: 1 })).toEqual({ waitMs: 3_600_000, tries: { busy: 5, bad: 1, rate: 1 }, reason: "rate" });
+  expect(afterFailure({ kind: "rate", waitMs: 60_000 }, { busy: 0, bad: 0, rate: RATE_TRIES })).toHaveProperty("fail");
+  // Rate waits don't use up the tries for an overloaded model.
+  expect(afterFailure({ kind: "busy", waitMs: 0 }, { busy: 0, bad: 0, rate: 40 })).toMatchObject({ tries: { busy: 1, rate: 40 }, reason: "busy" });
   // Total wait before giving up on a busy model: about 6 hours.
   const total = Array.from({ length: BUSY_TRIES }, (_, t) => backoffMs(t)).reduce((a, b) => a + b, 0);
   expect(total / 3_600_000).toBeGreaterThan(5.5);
@@ -54,9 +56,12 @@ it("backs off, then gives up", () => {
 });
 
 it("stops at once on a key with no quota, and waits out daily caps", () => {
-  const e = { statusCode: 429, message: "You exceeded your current quota, please check your plan and billing details." };
+  const e = { statusCode: 429, message: "You exceeded your current quota, please check your plan and billing details.", responseBody: '{"error":{"code":"insufficient_quota"}}' };
   expect(rateLimit(e)).toBeNull();
   expect(retryable(e)).toBeNull();
+  // Gemini says the same words on an ordinary per-minute limit: that one is waited out.
+  const gemini = { statusCode: 429, message: "You exceeded your current quota, please check your plan and billing details.", responseBody: '{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"retryDelay":"20s"}]}}' };
+  expect(rateLimit(gemini)?.waitMs).toBe(20_000);
   expect(rateLimit({ statusCode: 429, message: "Rate limit exceeded: free-models-per-day" })?.waitMs).toBe(3_600_000);
   // OpenRouter's reset time, epoch ms.
   const reset = Date.now() + 120_000;

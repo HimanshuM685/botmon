@@ -39,7 +39,9 @@ function headerWait(err: ErrLike, now = Date.now()): number | undefined {
 }
 
 /** A key with no money or quota at all: a 429 that waiting never lifts. */
-export const NO_QUOTA = /insufficient_quota|check your plan and billing|billing details|out of credits|insufficient credits|credit balance/i;
+// Not "check your plan and billing details": Gemini says that on every ordinary per-minute limit too. OpenAI's real
+// no-quota error carries the insufficient_quota code in its body.
+export const NO_QUOTA = /insufficient_quota|out of credits|insufficient credits|credit balance/i;
 
 export function rateLimit(e: unknown): Limit | null {
   const err = unwrap(e);
@@ -107,17 +109,17 @@ export const OUTPUT_TRIES = 4;
  */
 export const RATE_TRIES = 48;
 
-/** Failures in a row, counted apart: an overloaded model and unreadable answers each have their own limit. */
-export type Tries = { busy: number; bad: number };
+/** Failures in a row, counted apart: an overloaded model, unreadable answers and rate limits each have their own limit. */
+export type Tries = { busy: number; bad: number; rate?: number };
 export type Wait = "rate" | "busy" | "output";
 
 /** What to do after a failed step: wait (and why) and try again, or stop. */
 export function afterFailure(f: Failure, tries: Tries): { waitMs: number; tries: Tries; reason: Wait } | { fail: string } {
-  // Counted with the overloads (failures in a row of a provider that isn't answering), but allowed far more.
+  // Counted on their own: a long wait for a daily cap must not use up the overload tries or stretch their backoff.
   if (f.kind === "rate")
-    return tries.busy + 1 > RATE_TRIES
+    return (tries.rate ?? 0) + 1 > RATE_TRIES
       ? { fail: "Your AI provider's rate limit or quota hasn't lifted for days. Check your plan or switch provider in Settings. Everything read so far is kept." }
-      : { waitMs: f.waitMs, tries: { ...tries, busy: tries.busy + 1 }, reason: "rate" };
+      : { waitMs: f.waitMs, tries: { ...tries, rate: (tries.rate ?? 0) + 1 }, reason: "rate" };
   if (f.kind === "output")
     return tries.bad + 1 >= OUTPUT_TRIES
       ? { fail: "Your model keeps returning answers that can't be read. Pick a stronger model in Settings and try again. Everything read so far is kept." }
