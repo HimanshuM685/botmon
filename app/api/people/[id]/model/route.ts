@@ -2,7 +2,7 @@ import { Output, streamText } from "ai";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { alive } from "@/lib/trash";
-import { getActiveKey, getChat, getChatStats, getPerson, loadChat, getVoices } from "@/lib/data";
+import { getActiveKey, getChat, getChatStats, getPerson, chatMessages, getVoices } from "@/lib/data";
 import { Prisma } from "@/generated/prisma/client";
 import { analysisSchema, modelPatchSchema, type Analysis } from "@/lib/ai/schema";
 import { buildMemoryReadPrompt, buildModelPatchPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
@@ -63,7 +63,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   // What the read has not absorbed yet; memory connected to it is kept first if the timeline is over budget.
   const { added, removed } = changedSince(allFacts, read?.adviceAt ?? null);
-  const msgs = chat ? await loadChat(chat.cipher) : [];
+  const msgs = chat ? await chatMessages(chat.id) : [];
   // This chat's voice, stored at upload; without a chat, the user's voice from their other chats.
   const voice = chat ? (await getVoices(chat, msgs)).me : await selfVoice(userId);
   const emotion = emotionMap(facts); // shares the memory budget below

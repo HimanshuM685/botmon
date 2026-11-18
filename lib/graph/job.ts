@@ -1,12 +1,12 @@
 import "server-only";
 import { after } from "next/server";
 import { db } from "../db";
-import { currentChat, getActiveKey, getChat, loadChat } from "../data";
+import { chatMessages, currentChat, getActiveKey } from "../data";
 import { encrypt } from "../crypto";
 import { alive } from "../trash";
 import { budgetFor, embedModelFor } from "../ai/models";
 import { cheapAsk, type Ask, type Key } from "../ai/cheap";
-import { buildGraph } from "../graph";
+import { buildGraph, HUBS, UP } from "../graph";
 import { linkMemories, loadGraphRows, mergeNodes, syncGraph } from "../graph-store";
 import { acceptCategories, categoryAnswerSchema, categoryPrompt, needsCategory } from "./categories";
 import { acceptTriples, backfillAnswerSchema, backfillPrompt, needsTriples } from "./backfill";
@@ -46,7 +46,7 @@ export async function claimGraphRun(personId: string, now = new Date()): Promise
   return won > 0;
 }
 
-const rssMb = () => Math.round(process.memoryUsage().rss / 1e6);
+export const rssMb = () => Math.round(process.memoryUsage().rss / 1e6);
 
 type Step = (person: Person, ask: Ask, key: Key) => Promise<void>;
 
@@ -57,13 +57,7 @@ async function categorize(person: Person, ask: Ask) {
     db.memoryNode.findMany({ where: { personId: person.id, kind: "thing", categorizedAt: null }, orderBy: { createdAt: "asc" }, select: { id: true } }),
   ]);
   const open = new Set(pending.map((n) => n.id));
-  const eligible = needsCategory(nodes, edges, new Set(nodes.filter((n) => !open.has(n.id)).map((n) => n.id)));
-  // Pending nodes that already sit in a category tree (or are hubs) are never asked about: mark them done, or
-  // hasWork counts them forever and every scheduled run starts for nothing.
-  const asIs = new Set(eligible.map((n) => n.id));
-  const skip = [...open].filter((id) => !asIs.has(id));
-  if (skip.length) await db.memoryNode.updateMany({ where: { personId: person.id, id: { in: skip } }, data: { categorizedAt: new Date() } });
-  const todo = eligible.slice(0, CATEGORY_BATCH);
+  const todo = needsCategory(nodes, edges, new Set(nodes.filter((n) => !open.has(n.id)).map((n) => n.id))).slice(0, CATEGORY_BATCH);
   if (!todo.length) return;
   const known = buildGraph(nodes, edges, []).known();
   const { items } = await ask(categoryAnswerSchema, categoryPrompt(todo.map((n) => n.label), known));
@@ -127,7 +121,7 @@ const embedLabels: Step = (person, _ask, key) => embedMissing(person.id, key);
  * since `graphThroughAt`. Prompts are cut to the provider's budget.
  */
 async function mineEvidence(person: Person, ask: Ask, key: Key) {
-  const [chat, p] = await Promise.all([getChat(person.id), db.person.findUnique({ where: { id: person.id }, select: { graphThroughAt: true } })]);
+  const [chat, p] = await Promise.all([db.chatUpload.findFirst({ ...currentChat(person.id), select: { id: true, lastAt: true, myName: true, theirName: true, tzOffset: true } }), db.person.findUnique({ where: { id: person.id }, select: { graphThroughAt: true } })]);
   if (!chat) return;
   const open = await db.memoryEdge.findMany({
     where: { personId: person.id, quoteCipher: null, fact: { ...alive } },
@@ -139,7 +133,7 @@ async function mineEvidence(person: Person, ask: Ask, key: Key) {
   const grown = !p?.graphThroughAt || chat.lastAt > p.graphThroughAt;
   const todo = fresh.length ? fresh.slice(0, EVIDENCE_BATCH) : grown && p?.graphThroughAt ? typedFirst(open).slice(0, EVIDENCE_RETRY) : [];
   if (todo.length) {
-    const [msgs, nodes] = await Promise.all([loadChat(chat.cipher), db.memoryNode.findMany({ where: { personId: person.id }, select: { id: true, key: true, label: true, kind: true, aliases: true } })]);
+    const [msgs, nodes] = await Promise.all([chatMessages(chat.id), db.memoryNode.findMany({ where: { personId: person.id }, select: { id: true, key: true, label: true, kind: true, aliases: true } })]);
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const name = (id: string) => (byId.get(id)?.key === "them" ? chat.theirName : byId.get(id)?.key === "me" ? chat.myName : byId.get(id)?.label ?? "?");
     const after = fresh.length ? 0 : p!.graphThroughAt!.getTime();
@@ -167,7 +161,9 @@ async function hasWork(personId: string, key: Key) {
   const p = await db.person.findUnique({ where: { id: personId }, select: { graphFactsAt: true, graphThroughAt: true } });
   const model = embedModelFor(key.provider);
   const [nodes, facts, chat, unmined, unembedded] = await Promise.all([
-    db.memoryNode.count({ where: { personId, kind: "thing", categorizedAt: null } }),
+    // Same nodes needsCategory picks (lib/graph/categories.ts): ones already in a category tree aren't work, or every
+    // scheduled run would start for nothing. Not marked done either: if they lose that link, they're asked then.
+    db.memoryNode.count({ where: { personId, kind: "thing", categorizedAt: null, key: { notIn: [...HUBS] }, edgesOut: { none: { rel: { in: [...UP] } } }, edgesIn: { none: { rel: { in: [...UP] } } } } }),
     db.personFact.count({ where: { personId, ...alive, ...(p?.graphFactsAt ? { createdAt: { gt: p.graphFactsAt } } : {}) } }),
     db.chatUpload.findFirst({ ...currentChat(personId), select: { lastAt: true } }), // not the chat itself: tens of MB
     db.memoryEdge.count({ where: { personId, quoteCipher: null, minedAt: null, fact: { ...alive } } }),
@@ -191,7 +187,7 @@ export async function runGraphJob(person: Person, key: Key) {
       // One step failing (a malformed answer, a rate limit) must not stop the others.
       await step(person, ask, key).catch((e) => (failed.push(step.name), console.error(`graph job: ${step.name} failed`, key.provider, (e as Error)?.message)));
     }
-    console.info(`graph job: ${calls} model calls in ${Math.round((Date.now() - startedAt) / 1000)}s${failed.length ? `, failed: ${failed.join(", ")}` : ""} (rss ${rssMb()}MB)`);
+    console.info(`graph job: ${calls} cheap-model calls (embeddings not counted) in ${Math.round((Date.now() - startedAt) / 1000)}s${failed.length ? `, failed: ${failed.join(", ")}` : ""} (rss ${rssMb()}MB)`);
   } finally {
     await db.person.update({ where: { id: person.id }, data: { graphLockUntil: null } }).catch(() => undefined);
   }

@@ -6,7 +6,7 @@ import { generateText, Output } from "ai";
 import { db } from "@/lib/db";
 import type { Prisma } from "@/generated/prisma/client";
 import { alive } from "@/lib/trash";
-import { getActiveKey, loadChat } from "@/lib/data";
+import { chatMessages, getActiveKey, loadChat } from "@/lib/data";
 import { budgetFor } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { afterFailure, charsFor, retryable, type Tries } from "@/lib/ai/limits";
@@ -18,7 +18,7 @@ import { claimHistoryRun, loadUnits, releaseHistoryRun, saveUnit } from "@/lib/h
 import { learnFromChat, selfChanged } from "@/lib/self/store";
 import { factsFromAnalysis, newFacts } from "@/lib/facts";
 import { loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
-import { scheduleGraphJob } from "@/lib/graph/job";
+import { rssMb, scheduleGraphJob } from "@/lib/graph/job";
 import { toLocal } from "@/lib/stats";
 import { prepareRead } from "./run";
 
@@ -38,7 +38,6 @@ const STALLED_MS = 90_000;
 /** Below this many chars per call the chat can't be read usefully on this key. */
 const MIN_BUDGET = 8_000;
 
-const rssMb = () => Math.round(process.memoryUsage().rss / 1e6);
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 const day = (ts: number, tz: number) => toLocal(ts, tz).toISOString().slice(0, 10);
 const inRange = (msgs: { ts: number }[], r: Range) => msgs.filter((m) => m.ts >= r.fromTs && m.ts <= r.toTs) as Parameters<typeof buildChapterPrompt>[0]["msgs"];
@@ -226,14 +225,16 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         await selfChanged(person.userId).catch(() => undefined);
         throw e;
       }
-      await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readPartsDone: parts });
+      const { count } = await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readPartsDone: parts });
+      if (!count) return {}; // stopped or restarted meanwhile: not this job's to report
       console.info(`read job: read saved in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
       scheduleGraphJob(person.userId, person);
       return {};
     }
     // A step done: failures start counting again, and the page sees the progress (one more part read).
-    console.info(`read job: ${r ? "chapter" : "era"} done, part ${parts - work.todo.length - work.eraTodo.length + 1}/${parts} in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
-    await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: parts - work.todo.length - work.eraTodo.length + 1 });
+    const done = parts - work.todo.length - work.eraTodo.length + 1;
+    console.info(`read job: ${r ? "chapter" : "era"} done, part ${done}/${parts} in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
+    await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: done });
     return { again: 0 };
   } catch (e) {
     const failure = retryable(e);
@@ -264,8 +265,8 @@ export async function step(chatId: string): Promise<{ again?: number }> {
 }
 
 /** Where a chat's background read stands, for the page. */
-export async function readStatus(chat: { id: string; cipher: string; tzOffset: number } & JobRow, key: { provider: Parameters<typeof budgetFor>[0]["provider"]; budget?: number }) {
-  const msgs = await loadChat(chat.cipher);
+export async function readStatus(chat: { id: string; tzOffset: number } & JobRow, key: { provider: Parameters<typeof budgetFor>[0]["provider"]; budget?: number }) {
+  const msgs = await chatMessages(chat.id);
   const work = historyWork(msgs, await loadUnits(chat.id), budgetFor(key), chat.tzOffset);
   const left = work.todo.reduce((n, r) => n + inRange(msgs, r).reduce((c, m) => c + m.text.length + 30, 0), 0);
   return {

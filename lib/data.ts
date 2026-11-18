@@ -37,9 +37,14 @@ export const getPerson = cache((userId: string, personId: string) =>
 /** Which row is the person's current chat: the newest not in the trash. For queries that pick their own columns. */
 export const currentChat = (personId: string) => ({ where: { personId, ...alive }, orderBy: { createdAt: "desc" as const } });
 
-/** The person's current chat (not in the trash). */
+/** The person's current chat (not in the trash), without its messages (tens of MB): chatMessages loads those. */
 export function getChat(personId: string) {
-  return db.chatUpload.findFirst(currentChat(personId));
+  return db.chatUpload.findFirst({ ...currentChat(personId), omit: { cipher: true } });
+}
+
+/** A chat's messages, decrypted. Only where they are really needed. */
+export async function chatMessages(chatId: string): Promise<Msg[]> {
+  return loadChat((await db.chatUpload.findUniqueOrThrow({ where: { id: chatId }, select: { cipher: true } })).cipher);
 }
 
 export async function loadChat(cipher: string): Promise<Msg[]> {
@@ -58,7 +63,7 @@ export const sealVoices = (v: ChatVoices) => encrypt(JSON.stringify(v));
  */
 export async function getVoices(chat: { id: string; voiceCipher: string | null; myName: string; theirName: string; cipher?: string }, msgs?: Msg[]): Promise<ChatVoices> {
   if (chat.voiceCipher) return JSON.parse(decrypt(chat.voiceCipher)) as ChatVoices;
-  const all = msgs ?? (await loadChat(chat.cipher ?? (await db.chatUpload.findUniqueOrThrow({ where: { id: chat.id }, select: { cipher: true } })).cipher));
+  const all = msgs ?? (chat.cipher ? await loadChat(chat.cipher) : await chatMessages(chat.id));
   const voices = measureVoices(all, chat.myName, chat.theirName);
   await db.chatUpload.update({ where: { id: chat.id }, data: { voiceCipher: sealVoices(voices) } });
   return voices;
@@ -67,8 +72,7 @@ export async function getVoices(chat: { id: string; voiceCipher: string | null; 
 /** Stored stats, or for chats uploaded before stats were stored: compute from the messages once and save. */
 export async function getChatStats(chat: { id: string; stats: unknown; myName: string; tzOffset: number; cipher?: string }): Promise<ChatStats> {
   if (chat.stats) return chat.stats as ChatStats;
-  const cipher = chat.cipher ?? (await db.chatUpload.findUniqueOrThrow({ where: { id: chat.id }, select: { cipher: true } })).cipher;
-  const stats = computeStats(await loadChat(cipher), chat.myName, chat.tzOffset);
+  const stats = computeStats(chat.cipher ? await loadChat(chat.cipher) : await chatMessages(chat.id), chat.myName, chat.tzOffset);
   await db.chatUpload.update({ where: { id: chat.id }, data: { stats } });
   return stats;
 }

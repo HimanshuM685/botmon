@@ -2,7 +2,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { getUserId } from "@/lib/auth/server";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
-import { chatPayloadSchema, getChat, getPerson, loadChat, MAX_CHAT_MESSAGES, measureVoices, sealVoices } from "@/lib/data";
+import { chatPayloadSchema, getChat, getPerson, chatMessages, MAX_CHAT_MESSAGES, measureVoices, sealVoices } from "@/lib/data";
 import { refreshSelfVoice, rememberSelfName } from "@/lib/self/store";
 import { mergeChats } from "@/lib/merge";
 import { computeStats } from "@/lib/stats";
@@ -36,7 +36,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // Same two people as the stored chat: merge, keeping only messages we don't have yet.
   if (existing && existing.myName === myName && existing.theirName === theirName) {
-    const { messages, added } = mergeChats(await loadChat(existing.cipher), incoming);
+    const { messages, added } = mergeChats(await chatMessages(existing.id), incoming);
     if (!added.length) return Response.json({ ok: true, mode: "merged", added: 0, msgCount: existing.msgCount });
     if (messages.length > MAX_CHAT_MESSAGES)
       return Response.json({ error: `This chat would pass ${MAX_CHAT_MESSAGES.toLocaleString()} messages. Export a shorter range.` }, { status: 413 });

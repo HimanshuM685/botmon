@@ -1,7 +1,7 @@
 import { getUserId } from "@/lib/auth/server";
 import { currentChat, getActiveKey, getPerson } from "@/lib/data";
 import { db } from "@/lib/db";
-import { startRead } from "@/lib/read/job";
+import { JOB_FIELDS, startRead } from "@/lib/read/job";
 
 /**
  * Start a read of the person's current chat. Every read runs in the background (lib/read/job.ts): long chats part by
@@ -14,7 +14,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const person = await getPerson(userId, (await params).id);
   if (!person) return Response.json({ error: "Not found" }, { status: 404 });
 
-  const [key, chat] = await Promise.all([getActiveKey(userId), db.chatUpload.findFirst({ ...currentChat(person.id), select: { id: true, readMode: true, readNextAt: true, historyLockUntil: true } })]); // not the chat itself: tens of MB
+  const [key, chat] = await Promise.all([getActiveKey(userId), db.chatUpload.findFirst({ ...currentChat(person.id), select: JOB_FIELDS })]); // not the chat itself: tens of MB
   if (!key) return Response.json({ error: "Add an AI key in Settings first" }, { status: 400 });
   if (!chat) return Response.json({ error: "Upload a chat first" }, { status: 400 });
 

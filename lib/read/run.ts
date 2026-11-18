@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
-import { currentContextHash, getChatStats, getVoices, loadChat, type getActiveKey, type getChat, type getPerson } from "@/lib/data";
+import { chatMessages, currentContextHash, getChatStats, getVoices, type getActiveKey, type getChat, type getPerson } from "@/lib/data";
 import type { Analysis } from "@/lib/ai/schema";
 import { Prisma } from "@/generated/prisma/client";
 import { buildPrompt, SYSTEM, type RelationId } from "@/lib/ai/prompt";
@@ -46,7 +46,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
 
   // Long chats are read whole: every period before the newest stretch must be read (lib/read/job.ts) first,
   // so a read never silently skips months.
-  const msgs = loaded ?? (await loadChat(chat.cipher));
+  const msgs = loaded ?? (await chatMessages(chat.id));
   const budget = budgetFor(key);
   const history = await historyFor(chat, msgs, budget);
   if (!history.ready)

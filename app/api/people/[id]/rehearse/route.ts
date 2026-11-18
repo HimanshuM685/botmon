@@ -1,6 +1,6 @@
 import { createIdGenerator, createUIMessageStream, createUIMessageStreamResponse, generateText } from "ai";
 import { db } from "@/lib/db";
-import { getChat, getChatStats, loadChat, getVoices } from "@/lib/data";
+import { getChat, getChatStats, chatMessages, getVoices } from "@/lib/data";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { budgetFor } from "@/lib/ai/models";
@@ -45,7 +45,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     getChat(person.id),
   ]);
   const said = message.parts.map((p) => p.text).join(" ");
-  const msgs = chat ? await loadChat(chat.cipher) : [];
+  const msgs = chat ? await chatMessages(chat.id) : [];
   // Their voice, measured from their own messages: the prompt asks for it, applyVoice below holds the reply to it.
   const theirVoice = chat ? (await getVoices(chat, msgs)).them : null; // stored at upload (lib/data.ts)
   // Grounding, rebuilt every turn: the graph around what was just said, their boundaries, the read, real exchanges.

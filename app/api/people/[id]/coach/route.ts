@@ -11,7 +11,7 @@ import {
   type UIMessage,
 } from "ai";
 import { db } from "@/lib/db";
-import { getChat, getChatStats, loadChat, getVoices } from "@/lib/data";
+import { getChat, getChatStats, chatMessages, getVoices } from "@/lib/data";
 import { beginTurn } from "@/lib/ai/turn";
 import { Prisma } from "@/generated/prisma/client";
 import { getModel, providerError } from "@/lib/ai/provider";
@@ -105,7 +105,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const selfBlock = selfForPrompt({ ...me, relation: person.relation, budget: Math.floor(total * SELF_SHARE) });
   const common = commonGround(me.traits, graph, person.name);
   const used = selfBlock.length + common.length + memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + (thread.summary?.length ?? 0) + transcript.length + 6_000;
-  const msgs = chat ? await loadChat(chat.cipher) : [];
+  const msgs = chat ? await chatMessages(chat.id) : [];
   // This chat's voice, stored at upload; without a chat, the user's voice from their other chats.
   const voice = chat ? (await getVoices(chat, msgs)).me : await selfVoice(userId);
   // Long chats: what every earlier period held, read once (lib/history.ts). Whatever is read so far is used.
