@@ -49,6 +49,8 @@ it("backs off, then gives up", () => {
   expect(afterFailure({ kind: "rate", waitMs: 60_000 }, { busy: 0, bad: 0, rate: RATE_TRIES })).toHaveProperty("fail");
   // Rate waits don't use up the tries for an overloaded model.
   expect(afterFailure({ kind: "busy", waitMs: 0 }, { busy: 0, bad: 0, rate: 40 })).toMatchObject({ tries: { busy: 1, rate: 40 }, reason: "busy" });
+  // A timeout is said as such, so the next one knows it is the second in a row.
+  expect(afterFailure({ kind: "slow", waitMs: 0 }, { busy: 0, bad: 0 })).toMatchObject({ waitMs: 5_000, reason: "slow" });
   // Total wait before giving up on a busy model: about 6 hours.
   const total = Array.from({ length: BUSY_TRIES }, (_, t) => backoffMs(t)).reduce((a, b) => a + b, 0);
   expect(total / 3_600_000).toBeGreaterThan(5.5);
@@ -62,6 +64,9 @@ it("stops at once on a key with no quota, and waits out daily caps", () => {
   // Gemini says the same words on an ordinary per-minute limit: that one is waited out.
   const gemini = { statusCode: 429, message: "You exceeded your current quota, please check your plan and billing details.", responseBody: '{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"retryDelay":"20s"}]}}' };
   expect(rateLimit(gemini)?.waitMs).toBe(20_000);
+  // A Gemini daily cap also says seconds, but lifts hours later.
+  const geminiDaily = { statusCode: 429, message: "Quota exceeded for metric: GenerateRequestsPerDayPerProjectPerModel-FreeTier", responseBody: '{"details":[{"retryDelay":"30s"}]}' };
+  expect(rateLimit(geminiDaily)?.waitMs).toBe(3_600_000);
   expect(rateLimit({ statusCode: 429, message: "Rate limit exceeded: free-models-per-day" })?.waitMs).toBe(3_600_000);
   // OpenRouter's reset time, epoch ms.
   const reset = Date.now() + 120_000;

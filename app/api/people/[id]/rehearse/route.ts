@@ -37,15 +37,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (started instanceof Response) return started;
   const { person, key, thread, message } = started;
 
-  const [rows, read, facts, graphRows, chat] = await Promise.all([
+  const [rows, read, facts, graphRows, { chat, msgs }] = await Promise.all([
     db.coachMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: TURNS }),
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
     db.personFact.findMany({ where: { personId: person.id, deletedAt: null }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, feeling: true, valence: true } }),
     loadGraphRows(person.id),
-    getChat(person.id),
+    getChat(person.id).then(async (c) => ({ chat: c, msgs: c ? await chatMessages(c.id) : [] })), // messages fetched alongside the rest
   ]);
   const said = message.parts.map((p) => p.text).join(" ");
-  const msgs = chat ? await chatMessages(chat.id) : [];
   // Their voice, measured from their own messages: the prompt asks for it, applyVoice below holds the reply to it.
   const theirVoice = chat ? (await getVoices(chat, msgs)).them : null; // stored at upload (lib/data.ts)
   // Grounding, rebuilt every turn: the graph around what was just said, their boundaries, the read, real exchanges.
@@ -57,7 +56,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     personName: person.name,
     relation: person.relation as RelationId,
     gender: person.gender,
-    chat: chat ? { myName: chat.myName, theirName: chat.theirName, tzOffset: chat.tzOffset, stats: await getChatStats(chat), msgs } : null,
+    chat: chat ? { myName: chat.myName, theirName: chat.theirName, tzOffset: chat.tzOffset, stats: await getChatStats(chat, msgs), msgs } : null,
     read: (read?.result ?? null) as Record<string, unknown> | null,
     graph: graph.brief(focus.map((n) => n.id)).slice(0, 8_000),
     boundaries: graph.edges.filter((e) => e.fromId === them?.id && ["AVOIDS", "FEARS", "DISLIKES"].includes(e.rel)).slice(-30).map((e) => graph.renderEdge(e)),

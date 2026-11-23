@@ -196,6 +196,17 @@ export const chapterSchema = z.object({
 });
 export type ChapterResult = z.infer<typeof chapterSchema>;
 
+/**
+ * The detail pass (lib/memory/details.ts): every small thing about them in a few sittings, each pointing at the
+ * line it came from. Separate from chapters, which summarise: this one only collects, so nothing said once is lost.
+ */
+export const detailSchema = z.object({
+  details: z
+    .array(analysisSchema.shape.keyFacts.element.extend({ line: z.number().int().describe("The #number of the line it was said in (the first one, if several)") }))
+    .describe("Every concrete detail about them in these lines, even said once in passing. Empty if there is none."),
+});
+export type DetailResult = z.infer<typeof detailSchema>;
+
 /** Several chapters condensed, when the whole history no longer fits a prompt. */
 export const eraSchema = z.object({
   phase: z.string().describe("2-6 words naming this stretch"),

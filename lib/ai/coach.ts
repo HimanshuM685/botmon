@@ -27,6 +27,7 @@ How you help:
   3. Take the lines marked "!" seriously. They are findings from the links, such as something they did although it costs them, or a plan that touches something they avoid. Such a finding is often the whole point: say it, and say what it means about how they feel.
   4. When a finding or link carries a quote marker like [q:abc123], read the quote (call quote with that id) before you rely on it, and cite it with its date: the exact words and how they were said are the evidence. Without a marker, when how something was said matters, call searchChat and read the lines around the hit for tone. Try several related words in one query (cheese paneer dairy milk).
   5. Only then answer.
+- Small details: before you say you don't know something about them (a food, a name, a place, a show, a date, anything they may have said once long ago), call remember_detail. It searches every message ever sent, by meaning and by words, and every memory. Ask it in plain words ("what food does she like", "her sister's name").
 - More to look things up with: findings lists what the links have shown so far, with the evidence, including things noticed in earlier conversations; history shows what they used to feel before it changed ("she used to…"); search_history finds what you and the user said in earlier conversations as well as the chat.
 - Every claim about the person names what it rests on: a memory, a link, or a quoted line. If you have nothing on a point, say so and ask one specific question instead of filling the gap with general relationship advice.
 - No stock advice. "Communicate openly", "give her space", "be yourself" are useless on their own: say what to do or the exact words to send, and why it fits this person given what you found.
@@ -164,6 +165,8 @@ export function coachTools(deps: {
   quote?: (edgeId: string) => Promise<{ text: string; ts: number; sender: "them" | "me" } | null>;
   /** Stored findings (lib/graph/findings.ts). Without them, what the graph shows right now is listed. */
   findings?: { key: string; kind: string; text: string; edgeIds: string[]; firstSeenAt: Date; retiredAt: Date | null }[];
+  /** Total recall (lib/memory/recall.ts): memories and chat sittings about something, by meaning and words. */
+  recallDetail?: (query: string) => Promise<string>;
   /** Earlier coach conversations and their summaries, searched by the server. Never rehearsal threads. */
   searchHistory?: (query: string, limit: number) => Promise<{ source: string; text: string }[]>;
   /** How the user types (lib/voice.ts), for check_draft. */
@@ -227,6 +230,15 @@ export function coachTools(deps: {
         return hits.length ? cap(hits.join("\n--\n")) : "No messages found.";
       },
     }),
+    ...(deps.recallDetail
+      ? {
+          remember_detail: tool({
+            description: "Recall everything about something from the whole chat history (every message, by meaning and by words) and from memory: small details said once long ago, names, foods, places, likes, plans. Ask in plain words, e.g. 'what food does she like', 'her best friend', 'trip to goa'.",
+            inputSchema: z.object({ query: z.string().min(2).max(120) }),
+            execute: async ({ query }) => cap(await deps.recallDetail!(query)),
+          }),
+        }
+      : {}),
     remember: tool({
       description: "Save a lasting fact or event about the person or the relationship to long-term memory (their timeline).",
       inputSchema: z.object({

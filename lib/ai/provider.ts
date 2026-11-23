@@ -6,7 +6,7 @@ import { createGroq } from "@ai-sdk/groq";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { wrapLanguageModel } from "ai";
 import type { ProviderId } from "./models";
-import { NO_QUOTA, rateLimit, retryable } from "./limits";
+import { NO_QUOTA, rateLimit, retryable, textOf, unwrap } from "./limits";
 
 export function getModel(provider: ProviderId, apiKey: string, model: string) {
   switch (provider) {
@@ -36,7 +36,7 @@ export function providerError(e: unknown): string {
   const status = (e as { statusCode?: number })?.statusCode;
   if (status === 401 || status === 403 || /api key|unauthori[sz]ed|permission|invalid.*key/i.test(msg))
     return "Your AI key was rejected. Update it in Settings.";
-  if (NO_QUOTA.test(`${msg} ${(e as { lastError?: { message?: string } })?.lastError?.message ?? ""} ${(e as { responseBody?: string })?.responseBody ?? ""}`))
+  if (NO_QUOTA.test(`${msg} ${textOf(unwrap(e), e)}`))
     return "Your AI key has no quota or credits left. Add billing with your provider or switch provider in Settings.";
   const limit = rateLimit(e);
   if (limit?.tooBigFor)

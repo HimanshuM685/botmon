@@ -1,3 +1,4 @@
+import { recallMemory } from "@/lib/memory/recall";
 import {
   convertToModelMessages,
   createIdGenerator,
@@ -76,9 +77,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     ? rehearsalTranscript(await db.coachMessage.findMany({ where: { threadId: debriefId, thread: { personId: person.id, mode: "rehearsal" } }, orderBy: { createdAt: "asc" }, select: { role: true, parts: true } }), person.name)
     : "";
 
-  const [rows, chat, read, allFacts, graphRows, findings] = await Promise.all([
+  const [rows, { chat, msgs }, read, allFacts, graphRows, findings] = await Promise.all([
     recentMessages(thread), // after the thread's summary, when a long conversation has one
-    getChat(person.id),
+    getChat(person.id).then(async (c) => ({ chat: c, msgs: c ? await chatMessages(c.id) : [] })), // messages fetched alongside the rest
     db.analysis.findFirst({ where: { personId: person.id, deletedAt: null, result: { not: Prisma.DbNull } }, orderBy: { createdAt: "desc" }, select: { result: true } }),
     db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true } }),
     loadGraphRows(person.id),
@@ -105,7 +106,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const selfBlock = selfForPrompt({ ...me, relation: person.relation, budget: Math.floor(total * SELF_SHARE) });
   const common = commonGround(me.traits, graph, person.name);
   const used = selfBlock.length + common.length + memory.chars + emotion.length + graphBrief.length + known.join(", ").length + (read ? JSON.stringify(read.result).length : 0) + rows.reduce((n, r) => n + JSON.stringify(r.parts).length, 0) + (thread.summary?.length ?? 0) + transcript.length + 6_000;
-  const msgs = chat ? await chatMessages(chat.id) : [];
   // This chat's voice, stored at upload; without a chat, the user's voice from their other chats.
   const voice = chat ? (await getVoices(chat, msgs)).me : await selfVoice(userId);
   // Long chats: what every earlier period held, read once (lib/history.ts). Whatever is read so far is used.
@@ -137,6 +137,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     },
     findings,
     searchHistory: (query, limit) => searchCoachHistory(person.id, message.id, query, limit),
+    recallDetail: (query) => recallMemory(person.id, query, key, chat?.tzOffset ?? 0),
     voice,
     cap: capFor(total),
     // What the user tells about themself goes to their own profile, shared by every person (lib/self).
@@ -163,7 +164,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     relation: person.relation as RelationId,
     gender: person.gender,
     notes: person.notes,
-    chat: chat ? { myName: chat.myName, theirName: chat.theirName, tzOffset: chat.tzOffset, stats: await getChatStats(chat), msgs } : null,
+    chat: chat ? { myName: chat.myName, theirName: chat.theirName, tzOffset: chat.tzOffset, stats: await getChatStats(chat, msgs), msgs } : null,
     read: read?.result ?? null,
     facts: memory.facts,
     emotion,

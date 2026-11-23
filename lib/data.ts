@@ -69,10 +69,10 @@ export async function getVoices(chat: { id: string; voiceCipher: string | null; 
   return voices;
 }
 
-/** Stored stats, or for chats uploaded before stats were stored: compute from the messages once and save. */
-export async function getChatStats(chat: { id: string; stats: unknown; myName: string; tzOffset: number; cipher?: string }): Promise<ChatStats> {
+/** Stored stats, or for chats uploaded before stats were stored: compute from the messages once and save. Pass `msgs` when already decrypted. */
+export async function getChatStats(chat: { id: string; stats: unknown; myName: string; tzOffset: number; cipher?: string }, msgs?: Msg[]): Promise<ChatStats> {
   if (chat.stats) return chat.stats as ChatStats;
-  const stats = computeStats(chat.cipher ? await loadChat(chat.cipher) : await chatMessages(chat.id), chat.myName, chat.tzOffset);
+  const stats = computeStats(msgs ?? (chat.cipher ? await loadChat(chat.cipher) : await chatMessages(chat.id)), chat.myName, chat.tzOffset);
   await db.chatUpload.update({ where: { id: chat.id }, data: { stats } });
   return stats;
 }

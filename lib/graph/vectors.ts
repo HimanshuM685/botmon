@@ -20,8 +20,10 @@ type Key = { provider: ProviderId; apiKey: string };
 /**
  * Embed short texts with the user's key. Null when the provider can't, or the call failed.
  * NIM is called directly: its embedding models take an `input_type` the SDK doesn't send.
+ * `dims`: fewer numbers per vector where the model allows it (Gemini, OpenAI); `strict`: throw instead of null, so a
+ * background job can tell a rate limit from a broken key.
  */
-export async function embed(key: Key, values: string[]): Promise<number[][] | null> {
+export async function embed(key: Key, values: string[], opts: { dims?: number; strict?: boolean } = {}): Promise<number[][] | null> {
   const model = embedModelFor(key.provider);
   if (!model || !values.length) return null;
   try {
@@ -42,10 +44,12 @@ export async function embed(key: Key, values: string[]): Promise<number[][] | nu
       values,
       maxRetries: 1,
       // Gemini's default is 3072 numbers a label; 768 is plenty for names.
-      ...(key.provider === "GEMINI" ? { providerOptions: { google: { outputDimensionality: 768 } } } : {}),
+      ...(key.provider === "GEMINI" ? { providerOptions: { google: { outputDimensionality: opts.dims ?? 768 } } } : {}),
+      ...(key.provider === "OPENAI" && opts.dims ? { providerOptions: { openai: { dimensions: opts.dims } } } : {}),
     });
     return embeddings;
   } catch (e) {
+    if (opts.strict) throw e;
     console.error("embedding failed", key.provider, (e as Error)?.message);
     return null;
   }

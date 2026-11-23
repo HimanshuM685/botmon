@@ -63,7 +63,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
     return { refused: { error: "Hourly limit reached. Try again later.", status: 429, code: "hourly" } satisfies ReadRefusal };
   }
 
-  const allFacts = await db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, createdAt: true, updatedAt: true } });
+  const allFacts = await db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, mentions: true, createdAt: true, updatedAt: true } });
   const facts = allFacts.filter((f) => !f.deletedAt);
   // Everything shares one budget: timeline (capped), previous read, then as much chat as still fits.
   const memory = factsWithinBudget(facts, Math.floor(budget * FACTS_SHARE));
@@ -71,7 +71,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
   const graph = await loadGraph(person, facts);
   const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
   const chatBudget = Math.max(5_000, budget - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
-  const stats = await getChatStats(chat);
+  const stats = await getChatStats(chat, msgs);
   const voice = (await getVoices(chat, msgs)).me; // stored at upload (lib/data.ts)
   const prompt = buildPrompt({
     personName: person.name,

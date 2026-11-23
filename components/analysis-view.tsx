@@ -34,8 +34,10 @@ export type ChatNumber = { label: string; value: string; hint: string };
 const WAIT_TEXT = {
   rate: "waiting for your AI provider's rate limit",
   busy: "your AI model is busy, trying again",
+  slow: "your AI model answered too slowly, trying again",
   output: "your AI model's answer couldn't be read, asking again",
   hourly: "hourly read limit reached, carrying on",
+  history: "the chat changed, planning its history again",
 } as const;
 const menuItem = "block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-ink-3 disabled:opacity-50";
 
@@ -83,7 +85,7 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
   }
   // Every read runs on the server (lib/read/job.ts): long chats part by part, overloaded models and rate limits
   // retried with waits. It goes on when this page is closed; here it is only followed.
-  type Reading = { done: number; total: number; nextAt: string | null; tries: number; wait: "rate" | "busy" | "output" | "hourly" | null };
+  type Reading = { done: number; total: number; nextAt: string | null; tries: number; wait: "rate" | "busy" | "slow" | "output" | "hourly" | "history" | null };
   const idle: Reading = { done: 0, total: 0, nextAt: null, tries: 0, wait: null };
   const [reading, setReading] = useState<Reading | null>(readingInBackground ? idle : null);
   const [failed, setFailed] = useState<string | null>(readFailed);

@@ -19,8 +19,8 @@ function duration(s: string): number | undefined {
 }
 
 /** The AI SDK wraps the last attempt in a RetryError. */
-const unwrap = (e: unknown) => ((e as ErrLike)?.lastError ?? e) as ErrLike & { name?: string; isRetryable?: boolean; cause?: { name?: string } };
-const textOf = (err: ErrLike, e: unknown) => `${err?.message ?? e} ${err?.responseBody ?? ""}`;
+export const unwrap = (e: unknown) => ((e as ErrLike)?.lastError ?? e) as ErrLike & { name?: string; isRetryable?: boolean; cause?: { name?: string } };
+export const textOf = (err: ErrLike, e: unknown) => `${err?.message ?? e} ${err?.responseBody ?? ""}`;
 
 /** How long the provider's headers say to wait, in ms, if they say. */
 function headerWait(err: ErrLike, now = Date.now()): number | undefined {
@@ -55,13 +55,15 @@ export function rateLimit(e: unknown): Limit | null {
   const m = perMinute ? text.match(/Limit:?\s*(\d+)[^.]*?Requested:?\s*(\d+)/i) : null;
   const tooBigFor = m && Number(m[2]) > Number(m[1]) ? Number(m[1]) : undefined;
 
-  const hinted =
-    headerWait(err) ||
-    duration(text.match(/try again in\s*([\d.hms]+)/i)?.[1] ?? "") ||
-    duration(text.match(/"retryDelay":\s*"([\d.]+s)"/)?.[1] ?? "");
   // Daily caps (tokens or requests per day) don't lift in a minute.
   // OpenRouter says "free-models-per-day".
   const daily = /per.?day|daily|\bTPD\b|\bRPD\b/i.test(text);
+  // Gemini's retryDelay on a daily cap is seconds, though the cap lifts hours later: waited at least an hour.
+  const retryDelay = duration(text.match(/"retryDelay":\s*"([\d.]+s)"/)?.[1] ?? "");
+  const hinted =
+    headerWait(err) ||
+    duration(text.match(/try again in\s*([\d.hms]+)/i)?.[1] ?? "") ||
+    (retryDelay && daily ? Math.max(retryDelay, HOUR) : retryDelay);
   const waitMs = hinted && Number.isFinite(hinted) ? Math.max(1000, hinted) : daily ? HOUR : MINUTE;
   return { waitMs, tooBigFor };
 }
@@ -111,7 +113,7 @@ export const RATE_TRIES = 48;
 
 /** Failures in a row, counted apart: an overloaded model, unreadable answers and rate limits each have their own limit. */
 export type Tries = { busy: number; bad: number; rate?: number };
-export type Wait = "rate" | "busy" | "output";
+export type Wait = "rate" | "busy" | "slow" | "output";
 
 /** What to do after a failed step: wait (and why) and try again, or stop. */
 export function afterFailure(f: Failure, tries: Tries): { waitMs: number; tries: Tries; reason: Wait } | { fail: string } {
@@ -128,5 +130,5 @@ export function afterFailure(f: Failure, tries: Tries): { waitMs: number; tries:
     ? { fail: f.kind === "slow"
         ? "Your model is too slow to read this chat in time. Pick a faster model in Settings and try again. Everything read so far is kept."
         : "Your model has been overloaded for hours. Pick another model in Settings and try again. Everything read so far is kept." }
-    : { waitMs: f.kind === "slow" ? 5_000 : backoffMs(tries.busy, f.waitMs), tries: { ...tries, busy: tries.busy + 1 }, reason: "busy" };
+    : { waitMs: f.kind === "slow" ? 5_000 : backoffMs(tries.busy, f.waitMs), tries: { ...tries, busy: tries.busy + 1 }, reason: f.kind === "slow" ? "slow" : "busy" };
 }

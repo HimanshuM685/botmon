@@ -185,6 +185,7 @@ model ChatUpload {
   voiceCipher String?
   person    Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
   chapters  ChatChapter[]
+  episodes  ChatEpisode[]
   selfEvidence SelfEvidence[]
 
   @@index([personId])
@@ -248,6 +249,12 @@ model PersonFact {
   /// With the tags this is the emotion graph (lib/facts.ts emotionMap).
   feeling    String?
   valence    Int?
+  /// Learned by the detail pass (lib/memory/details.ts): the sitting it was said in, when it was first said, and how
+  /// often it came up again (reinforcement) and last when. A detail said once has mentions 1, and is still kept.
+  episodeId  String?
+  saidAt     DateTime?
+  mentions   Int          @default(1)
+  lastSeenAt DateTime?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
   deletedAt  DateTime?
@@ -258,6 +265,28 @@ model PersonFact {
 
   @@index([chatId])
   @@index([personId, deletedAt])
+}
+
+/// One sitting of a chat (lib/memory/episodes.ts): messages with no gap over 30 minutes, capped in size. Every message
+/// is in exactly one, so nothing said is ever out of reach. `cipher` is the messages, encrypted; `terms` are keyed
+/// hashes of its words (a blind keyword index: searchable, not readable); `embedding` is its meaning as a vector, from
+/// the user's key when it can embed. `detailsAt`: the detail pass has read it.
+model ChatEpisode {
+  id         String     @id @default(cuid())
+  chatId     String
+  fromTs     DateTime
+  toTs       DateTime
+  msgCount   Int
+  chars      Int
+  cipher     String
+  terms      Int[]
+  embedding  Unsupported("vector")?
+  embedModel String?
+  detailsAt  DateTime?
+  createdAt  DateTime   @default(now())
+  chat       ChatUpload @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, fromTs])
 }
 
 /// A direct link between two memories that shared entities can't express, e.g. the new memory "updates" the old one.

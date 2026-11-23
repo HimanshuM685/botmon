@@ -12,6 +12,10 @@ export type FactInput = {
   valence: number | null;
   /** Graph edges this memory states ("them AVOIDS milk"); stored as MemoryEdge rows, not on the fact (lib/graph-store.ts). */
   triples?: Triple[];
+  /** From the detail pass (lib/memory/episodes.ts): the sitting it was said in, and when. */
+  episodeId?: string;
+  saidAt?: Date;
+  lastSeenAt?: Date;
 };
 
 const toTriples = (list: (Partial<Triple> | undefined)[] | undefined): Triple[] =>
@@ -85,7 +89,7 @@ export function newFacts(existing: string[], candidates: FactInput[]): FactInput
   });
 }
 
-type PromptFact = { kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null };
+type PromptFact = { kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null; mentions?: number };
 
 const signed = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const day = (d: Date) => d.toISOString().slice(0, 10);
@@ -149,9 +153,11 @@ export function factsWithinBudget<T extends PromptFact>(facts: T[], maxChars: nu
   // One hop out: what the focused memories are also about ("wedding" pulls in "sister riya").
   const near = new Set(facts.filter((f) => sharesTag(f, wanted)).flatMap((f) => f.entities ?? []));
   const rank = (f: T) => (sharesTag(f, wanted) ? 2 : sharesTag(f, near) ? 1 : 0);
-  // Newest first (the list is oldest first), connected ones ahead of the rest.
+  // Newest first (the list is oldest first), connected ones ahead of the rest, and among those the ones that came up
+  // most often (the detail pass counts mentions): what they keep saying outlasts what they said once. The rest of a
+  // big timeline stays reachable through recall (lib/memory/recall.ts).
   const order = facts.map((_, i) => i).reverse();
-  if (wanted.size) order.sort((a, b) => rank(facts[b]) - rank(facts[a]));
+  order.sort((a, b) => (wanted.size ? rank(facts[b]) - rank(facts[a]) : 0) || (facts[b].mentions ?? 1) - (facts[a].mentions ?? 1));
   const keep = new Set<number>();
   let used = 0;
   for (const i of order) {

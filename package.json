@@ -11,7 +11,8 @@
     "postinstall": "prisma generate",
     "vercel-build": "prisma migrate deploy && next build",
     "purge": "tsx --conditions=react-server scripts/purge.mts",
-    "eval": "tsx --conditions=react-server scripts/eval.mts"
+    "eval": "tsx --conditions=react-server scripts/eval.mts",
+    "needle": "tsx --conditions=react-server scripts/needle.mts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.120",

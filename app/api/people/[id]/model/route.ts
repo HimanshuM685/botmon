@@ -81,7 +81,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     notes: person.notes,
     myName: chat?.myName,
     theirName: chat?.theirName,
-    stats: chat ? await getChatStats(chat) : null,
+    stats: chat ? await getChatStats(chat, msgs) : null,
     tzOffsetMin: chat?.tzOffset ?? 0,
     facts: factsWithinBudget(facts, memoryBudget, added.flatMap((f) => f.entities)).facts,
     emotion,

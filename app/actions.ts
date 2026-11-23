@@ -360,6 +360,8 @@ async function detachChat(chat: OwnedChat, now: Date) {
     db.personFact.deleteMany({ where: { personId: chat.personId, source: "ANALYSIS", analysisId: { in: reads } } }),
     // Memories its history chapters taught (lib/history.ts): the chapters stay with the chat, wherever it goes.
     db.personFact.deleteMany({ where: { personId: chat.personId, chatId: chat.id } }),
+    // Its details were erased with those memories: wherever the chat goes next (restored, moved), they are read again.
+    db.chatEpisode.updateMany({ where: { chatId: chat.id }, data: { detailsAt: null } }),
     // What the chat (its reads and chapters) taught about the user, with the user's lines from it.
     db.selfEvidence.deleteMany({ where: { personId: chat.personId, OR: [{ chatId: chat.id }, { analysisId: { in: reads } }] } }),
     ...(chat.replacedId ? [db.chatUpload.updateMany({ where: { id: chat.replacedId, personId: chat.personId, deletedAt: { not: null } }, data: { deletedAt: null } })] : []),
