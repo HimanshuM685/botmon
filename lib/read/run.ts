@@ -9,7 +9,8 @@ import { emotionMap, FACTS_SHARE, factsFromAnalysis, factsWithinBudget, newFacts
 import { budgetFor } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
-import { applyVoice, voiceForPrompt } from "@/lib/voice";
+import { applyVoice, baselineForPrompt, voiceForPrompt } from "@/lib/voice";
+import { dropRepeats } from "@/lib/suggest";
 import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
 import { learnFromChat, loadSelf, promoteMeEdges, selfChanged } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
@@ -63,7 +64,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
     return { refused: { error: "Hourly limit reached. Try again later.", status: 429, code: "hourly" } satisfies ReadRefusal };
   }
 
-  const allFacts = await db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, mentions: true, createdAt: true, updatedAt: true } });
+  const allFacts = await db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, orderBy: [{ happenedAt: "asc" }, { createdAt: "asc" }], select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, entities: true, feeling: true, valence: true, createdAt: true, updatedAt: true } });
   const facts = allFacts.filter((f) => !f.deletedAt);
   // Everything shares one budget: timeline (capped), previous read, then as much chat as still fits.
   const memory = factsWithinBudget(facts, Math.floor(budget * FACTS_SHARE));
@@ -72,7 +73,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
   const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
   const chatBudget = Math.max(5_000, budget - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const stats = await getChatStats(chat, msgs);
-  const voice = (await getVoices(chat, msgs)).me; // stored at upload (lib/data.ts)
+  const { me: voice, them: theirVoice } = await getVoices(chat, msgs); // stored at upload (lib/data.ts)
   const prompt = buildPrompt({
     personName: person.name,
     relation: person.relation as RelationId,
@@ -94,6 +95,7 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
     // The user's own profile: a prior for yourSide and for advice that fits them (lib/self).
     self: selfForPrompt({ ...(await loadSelf(userId)), relation: person.relation, budget: Math.floor(budget * SELF_SHARE) }),
     voice: voice ? voiceForPrompt(voice) : undefined,
+    theirBaseline: theirVoice ? baselineForPrompt(theirVoice) : undefined,
     history: history.text || undefined,
     historyTo: history.to,
   });
@@ -108,8 +110,8 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
     const output: Analysis = {
       ...generated,
       status: { ...generated.status, score: computeScore(generated.signals, stats) },
-      // Held to the user's own typing habits, whatever the model did.
-      messageSuggestions: generated.messageSuggestions.map((m) => applyVoice(m, voice)),
+      // Nothing the user has just sent, the best 4, held to their own typing habits whatever the model did.
+      messageSuggestions: dropRepeats(generated.messageSuggestions, msgs, chat.myName, chat.tzOffset).slice(0, 4).map((m) => applyVoice(m, voice)),
       voiceFrom: voice?.count,
     };
     // Keep every new detail as long-term memory (skips ones already on the timeline).

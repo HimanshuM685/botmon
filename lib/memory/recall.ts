@@ -50,12 +50,15 @@ async function byMeaning(chatId: string, query: string, key: Key): Promise<strin
 async function memories(personId: string, query: string) {
   const words = askedWords(query).filter((w) => w.length >= 3).slice(0, 16);
   if (!words.length) return [];
-  const found = await db.personFact.findMany({
-    where: { personId, ...alive, OR: words.map((w) => ({ text: { contains: w.length >= 6 ? w.slice(0, 5) : w, mode: "insensitive" as const } })) },
-    orderBy: [{ mentions: "desc" }, { lastSeenAt: { sort: "desc", nulls: "last" } }],
-    take: 200,
-    select: { text: true, kind: true, happenedAt: true, saidAt: true, mentions: true },
-  });
+  // Ranked by how many asked words a memory holds in the database itself, so on a big timeline a memory said once
+  // that matches well isn't cut before the exact count below. Words are letters and digits only (wordsOf): no LIKE
+  // wildcards to escape.
+  const matched = Prisma.join(words.map((w) => Prisma.sql`("text" ILIKE ${`%${w.length >= 6 ? w.slice(0, 5) : w}%`})::int`), " + ");
+  const found = await db.$queryRaw<{ text: string; kind: string; happenedAt: Date | null; saidAt: Date | null; mentions: number }[]>`
+    SELECT "text", "kind"::text AS "kind", "happenedAt", "saidAt", "mentions" FROM "PersonFact"
+    WHERE "personId" = ${personId} AND "deletedAt" IS NULL AND (${matched}) > 0
+    ORDER BY (${matched}) DESC, "mentions" DESC, "lastSeenAt" DESC NULLS LAST
+    LIMIT 200`;
   const hits = (text: string) => {
     const said = new Set(wordsOf(text).flatMap((w) => [w, w.slice(0, 5)]));
     return words.filter((w) => said.has(w.length >= 6 ? w.slice(0, 5) : w)).length;

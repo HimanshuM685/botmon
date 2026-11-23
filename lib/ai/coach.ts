@@ -155,6 +155,7 @@ export const REMEMBER_DETAIL = {
     words: z
       .array(z.string().max(40))
       .max(15)
+      .default([])
       .describe(
         "Words they may actually have typed about it, since the search also matches exact words: likely specific answers, synonyms and Hinglish, e.g. for 'does she have a pet': cat, dog, puppy, kitten, billi, kutta, pet name.",
       ),

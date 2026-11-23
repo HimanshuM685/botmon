@@ -3,7 +3,7 @@ import { generateText, Output } from "ai";
 import { db } from "../db";
 import { decrypt, encrypt } from "../crypto";
 import { embed } from "../graph/vectors";
-import { embedModelFor, CHEAP_MODEL, type ProviderId } from "../ai/models";
+import { budgetFor, embedModelFor, CHEAP_MODEL, type ProviderId } from "../ai/models";
 import { getModel } from "../ai/provider";
 import { seedFor } from "../ai/stream";
 import { buildDetailPrompt, type RelationId } from "../ai/prompt";
@@ -22,7 +22,7 @@ import { splitEpisodes, termsOf, type EpisodeRange } from "./split";
  * - embed: each sitting gets a meaning vector, where the user's key can embed.
  */
 
-type Key = { provider: ProviderId; apiKey: string; model: string };
+type Key = { provider: ProviderId; apiKey: string; model: string; budget?: number };
 type Person = { id: string; name: string; relation: string; gender: string };
 type Chat = { id: string; myName: string; theirName: string; tzOffset: number };
 
@@ -86,13 +86,16 @@ function row(chatId: string, e: EpisodeRange, msgs: Msg[]) {
 
 export const episodeLines = (cipher: string) => JSON.parse(decrypt(cipher)) as Msg[];
 
-/** The next unread sittings, grouped into detail calls of about DETAIL_CHARS each. */
-async function nextDetailBatches(chatId: string) {
+/**
+ * The next unread sittings, grouped into detail calls of about `maxChars` each: DETAIL_CHARS, or less on a key whose
+ * learned budget is smaller (a "too big for your rate limit" answer shrinks the budget, and so these calls).
+ */
+async function nextDetailBatches(chatId: string, maxChars: number) {
   const rows = await db.chatEpisode.findMany({ where: { chatId, detailsAt: null }, orderBy: { fromTs: "asc" }, take: 1_000, select: { id: true, chars: true, cipher: true } });
   const batches: (typeof rows)[] = [];
   let cur: typeof rows = [], size = 0;
   for (const r of rows) {
-    if (cur.length && size + r.chars > DETAIL_CHARS) {
+    if (cur.length && size + r.chars > maxChars) {
       batches.push(cur);
       if (batches.length >= DETAIL_CALLS) break;
       cur = [];
@@ -108,12 +111,14 @@ async function nextDetailBatches(chatId: string) {
 /**
  * The detail pass: a few calls' worth of unread sittings, read on the provider's cheapest model, every concrete thing
  * about the person saved as a memory pointing at its sitting and line. Said again later: the memory is reinforced
- * (mentions, lastSeenAt), not repeated. Calls that worked are saved even when another failed; the failure is then
- * thrown so the job can wait and retry the rest.
+ * (mentions, lastSeenAt), not repeated. Calls that worked are saved even when another failed. Nothing saved: the
+ * failure is thrown, so the job waits and retries. Some saved: it is returned with them, so the job counts the step
+ * as progress (a model that fails one call in twenty-four must not use up its tries) and waits before the rest.
  */
-export async function readDetails(person: Person, chat: Chat, key: Key, opts: { signal?: AbortSignal; temperature?: number; stillHere: () => Promise<boolean> }) {
-  const batches = await nextDetailBatches(chat.id);
-  if (!batches.length) return 0;
+export async function readDetails(person: Person, chat: Chat, key: Key, opts: { signal?: AbortSignal; temperature?: number; stillHere: () => Promise<boolean> }): Promise<{ saved: number; failure?: unknown }> {
+  // Half the key's budget at most: the prompt and the answer need room too.
+  const batches = await nextDetailBatches(chat.id, Math.min(DETAIL_CHARS, Math.floor(budgetFor(key) / 2)));
+  if (!batches.length) return { saved: 0 };
   const facts = await db.personFact.findMany({ where: { personId: person.id, deletedAt: undefined }, select: { id: true, kind: true, text: true, happenedAt: true, deletedAt: true, mentions: true, lastSeenAt: true, updatedAt: true } });
   const known = (await loadGraph(person, facts.filter((f) => !f.deletedAt))).known();
   const who = { personName: person.name, relation: person.relation as RelationId, gender: person.gender, myName: chat.myName, theirName: chat.theirName };
@@ -148,7 +153,7 @@ export async function readDetails(person: Person, chat: Chat, key: Key, opts: { 
   let saved = 0, failure: unknown = null;
   for (let i = 0; i < batches.length && !failure; i += DETAIL_PARALLEL) {
     const done = await Promise.allSettled(batches.slice(i, i + DETAIL_PARALLEL).map(ask));
-    if (!(await opts.stillHere())) return saved;
+    if (!(await opts.stillHere())) return { saved };
     for (const d of done) {
       if (d.status === "rejected") {
         failure ??= d.reason;
@@ -159,15 +164,17 @@ export async function readDetails(person: Person, chat: Chat, key: Key, opts: { 
       saved += d.value.batch.length;
     }
   }
-  if (failure) throw failure;
-  return saved;
+  if (failure && !saved) throw failure;
+  return { saved, failure: failure ?? undefined };
 }
 
 type Known = { id: string; text: string; deletedAt: Date | null; mentions: number; lastSeenAt: Date | null; updatedAt: Date | null };
 
 async function saveDetails(person: Person, chat: Chat, key: Key, facts: Known[], lines: { m: Msg; episodeId: string }[], details: DetailResult["details"]) {
-  const found = factsFromAnalysis({ keyFacts: details });
-  const at = (i: number) => lines[Math.min(lines.length - 1, Math.max(0, (details[i]?.line ?? 1) - 1))];
+  // Only the items factsFromAnalysis keeps, so found[i] and kept[i] are the same detail (and line).
+  const kept = details.filter((d) => d?.fact);
+  const found = factsFromAnalysis({ keyFacts: kept });
+  const at = (i: number) => lines[Math.min(lines.length - 1, Math.max(0, (kept[i]?.line ?? 1) - 1))];
   const byText = new Map(facts.map((f) => [normalizeFact(f.text), f]));
   // Said again later in the chat: the memory gets stronger (deleted ones stay deleted: the user said no). Only lines
   // after its last sighting count: a sitting read again (rebuilt after a merge) repeats what was counted already, and
@@ -200,8 +207,11 @@ async function saveDetails(person: Person, chat: Chat, key: Key, facts: Known[],
 
 const literal = (v: number[]) => `[${v.join(",")}]`;
 
-/** Meaning vectors for the next sittings without one of this key's model. Nothing to do for keys that can't embed. */
-export async function embedEpisodes(chatId: string, key: Key) {
+/**
+ * Meaning vectors for the next sittings without one of this key's model. Nothing to do for keys that can't embed.
+ * `deadline` (epoch ms): no group starts after it, and a call still running then is cut off.
+ */
+export async function embedEpisodes(chatId: string, key: Key, deadline?: number) {
   const model = embedModelFor(key.provider);
   if (!model) return 0;
   const rows = await db.chatEpisode.findMany({
@@ -210,9 +220,12 @@ export async function embedEpisodes(chatId: string, key: Key) {
   });
   let done = 0;
   for (let i = 0; i < rows.length; i += embedBatch(key.provider)) {
+    if (deadline && Date.now() > deadline) break;
     const group = rows.slice(i, i + embedBatch(key.provider));
-    const vectors = await embed(key, group.map((r) => episodeLines(r.cipher).map((m) => `${m.sender}: ${m.text}`).join("\n").slice(0, 6_000)), { dims: EMBED_DIMS, strict: true });
-    if (!vectors) throw new Error("Embedding failed");
+    const signal = deadline ? AbortSignal.timeout(Math.max(1, deadline - Date.now())) : undefined;
+    const vectors = await embed(key, group.map((r) => episodeLines(r.cipher).map((m) => `${m.sender}: ${m.text}`).join("\n").slice(0, 6_000)), { dims: EMBED_DIMS, strict: true, signal });
+    // One vector per sitting, or none saved: a short answer would leave sittings marked embedded with no vector.
+    if (!vectors || vectors.length !== group.length) throw new Error("Embedding failed");
     // One statement: a transaction of ~100 updates outlasts the transaction timeout on a far-away database.
     await db.$executeRaw`UPDATE "ChatEpisode" AS e SET "embedding" = v.vec::vector, "embedModel" = ${model}
       FROM unnest(${group.map((r) => r.id)}::text[], ${vectors.map(literal)}::text[]) AS v(id, vec)

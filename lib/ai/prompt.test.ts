@@ -44,7 +44,11 @@ it("model update carries what changed, the current read, and only the tail of th
   const part = (tag: string) => p.split(`<${tag}>`)[1].split(`</${tag}>`)[0];
   expect(part("read")).toContain('"label":"Warm"');
   expect(part("read")).not.toContain("old move"); // advice is shown separately
-  expect(part("previous_advice")).toContain("old move");
+  // Moves and messages are written fresh, never copied forward; last time's messages are listed apart.
+  expect(part("previous_advice")).not.toContain("old move");
+  expect(part("previous_advice")).not.toContain("old text");
+  expect(p).toMatch(/Messages you suggested last time\. Not sent: "old text"/);
+  expect(part("where_it_stands")).toContain("Last message");
   expect(part("new_information")).toContain("She got a new job");
   expect(part("new_information")).toMatch(/No longer true[\s\S]*Has a boyfriend/);
   expect(part("recent_chat").trim().split("\n")).toHaveLength(INCREMENTAL_CONTEXT);
@@ -67,4 +71,16 @@ it("carries the user's typing voice into reads and model updates, and only when 
   expect(buildModelPatchPrompt({ ...base, voice, read: prevResult, added: [], removed: [] })).toContain(voice);
   expect(buildPrompt(base)).not.toContain("How the user types, measured");
   expect(buildMemoryReadPrompt({ personName: "Riya", relation: "CRUSH", gender: "FEMALE", notes: null, tzOffsetMin: 0, voice })).not.toContain(voice); // no chat, nothing measured
+});
+
+it("tells the model which of last time's messages the user has since sent", () => {
+  const read = { messageSuggestions: ["whats ur favourite food", "sleep early"] } as unknown as Analysis;
+  const chat = [...msgs.slice(0, 10), { sender: "Me", text: "whats your favourite food?", ts: msgs[10].ts }];
+  const p = buildModelPatchPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), read, added: [], removed: [], readThrough: msgs[9].ts });
+  expect(p).toContain('The user has since sent: "whats ur favourite food". Never suggest those again');
+  expect(p).toContain('Not sent: "sleep early"');
+  expect(p).toMatch(/"whats your favourite food\?" \(no reply to it yet\)/);
+  const inc = buildPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), previous: { result: read, throughAt: msgs[9].ts } });
+  expect(inc).toContain('The user has since sent: "whats ur favourite food"');
+  expect(inc.split("<previous_read>")[1].split("</previous_read>")[0]).not.toContain("sleep early");
 });

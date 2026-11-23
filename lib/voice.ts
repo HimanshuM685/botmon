@@ -1,14 +1,14 @@
 import type { Msg } from "./parsers/types";
 
 /** Not typing: media placeholders, deleted-message stubs, bare links. */
-const NOT_TYPED =
+export const NOT_TYPED =
   /^(\[media\]|<media omitted>|<attached: .*>|(image|video|audio|sticker|gif|document) omitted|.*\(file attached\)|this message was deleted\.?|you deleted this message\.?|null|https?:\/\/\S+)$/i;
 const EMOJI = /\p{Extended_Pictographic}/u;
 const EMOJI_ALL = /[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]/gu;
 const GREETING = /^(he+y+|hi+|hello+|hell+o+)\b[!,.\s]*/i;
-const NEW_CONVO_GAP = 6 * 3600_000;
+export const NEW_CONVO_GAP = 6 * 3600_000;
 /** Ordinary words that say nothing about how someone spells. */
-const COMMON = new Set("the a an to is are was i you and of in it for on me my so but ok okay yes no not do did be at this that with have has we he she they what when where how why can will just if or as up out".split(" "));
+export const COMMON = new Set("the a an to is are was i you and of in it for on me my so but ok okay yes no not do did be at this that with have has we he she they what when where how why can will just if or as up out".split(" "));
 
 export type Voice = {
   /** How many of the user's own typed messages this was measured from. */
@@ -148,6 +148,26 @@ ${v.samples.join("\n")}
 Their habits:
 ${habitList}
 Every message you write for the user to send must look like they typed it on their own keyboard: copy the typing in the samples (casing, punctuation, spelling, emoji, length, language mix), not their content. If a message could have been written by anyone, or reads like an assistant wrote it, rewrite it.`;
+}
+
+/**
+ * The other person's usual typing, for reads: a description, not rules to copy. Tone is read against it, so a
+ * steady plain style is not taken for coldness and a change from it stands out.
+ */
+export function baselineForPrompt(v: Voice) {
+  const facts = [
+    `about ${v.medianWords} word${v.medianWords === 1 ? "" : "s"} a message; ${pct(v.shortShare)} are 1-3 words`,
+    v.emojiShare < 0.02 ? "almost no emoji" : `emoji in ${pct(v.emojiShare)} of messages${v.topEmoji.length ? ` (${v.topEmoji.join(" ")})` : ""}`,
+    v.endBang < 0.05 ? 'almost never "!"' : `"!" in ${pct(v.endBang)}`,
+    `"?" in ${pct(v.questionMark)}`,
+    v.ellipsis >= 0.05 ? `".." in ${pct(v.ellipsis)}` : "",
+    v.stretches ? "sometimes stretches letters (heyyy)" : "",
+    v.burst >= 1.8 ? `often ${Math.round(v.burst)} short messages in a row` : "",
+  ].filter(Boolean);
+  return `How they usually type (their baseline, from ${v.count} of their messages; read their tone against this, not against a generic texter): ${facts.join("; ")}.
+<their_usual>
+${v.samples.slice(-8).join("\n")}
+</their_usual>`;
 }
 
 /** Enough of the user's messages for a habit to count as a rule. */

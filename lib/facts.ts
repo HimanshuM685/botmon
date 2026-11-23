@@ -89,7 +89,7 @@ export function newFacts(existing: string[], candidates: FactInput[]): FactInput
   });
 }
 
-type PromptFact = { kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null; mentions?: number };
+type PromptFact = { kind: string; text: string; happenedAt: Date | null; entities?: string[]; feeling?: string | null; valence?: number | null };
 
 const signed = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const day = (d: Date) => d.toISOString().slice(0, 10);

@@ -137,6 +137,17 @@ export const analysisSchema = z.object({
   greenFlags: z.array(z.string()).describe("0-5, each tied to an observation"),
   redFlags: z.array(z.string()).describe("0-5 concerning patterns on either side. Empty if none."),
   thingsToCareAbout: z.array(z.string()).describe("2-5 things the user should keep in mind or pay attention to"),
+  // Written before the advice (structured output follows key order), so every move and message is built on it.
+  // .catch: reads saved before it existed, and a model that fumbles it, still parse.
+  moment: z
+    .object({
+      theirMood: z.string().catch("").describe("How they feel right now, from their LAST few messages (and the emotion map), with the words that show it, e.g. 'tired after office (\"office and gym, tired\")'"),
+      tone: z.enum(["warm", "playful", "neutral", "low", "upset", "distant"]).catch("neutral").describe("The tone of their latest messages"),
+      waitingOn: z.enum(["them", "user", "nobody"]).catch("nobody").describe("Who owes the next message: 'them' when the user sent last and got no reply (see 'Where the chat stands'), 'user' when they did, 'nobody' when it ended naturally"),
+      alreadyCovered: z.array(z.string()).catch([]).describe("Short topics the user already asked or talked about recently, or that memory already answers (e.g. 'favourite food: biryani', 'how her day was'). Advice must not ask these again."),
+      needs: z.string().catch("").describe("What the next message should do now: answer them, comfort, lighten things, give space and wait, pick up a thread, make a plan"),
+    })
+    .describe("Read the moment FIRST, then write next moves and messages from it."),
   nextMoves: z.array(
     z.object({
       action: z.string(),
@@ -144,12 +155,16 @@ export const analysisSchema = z.object({
       when: z.string().describe("Timing, e.g. 'tonight', 'this weekend', 'after she replies'"),
     }),
   ).describe("Exactly 2: the best immediate move, then the follow-up after it"),
-  messageSuggestions: z.array(z.string()).describe("Exactly 4 ready-to-send messages typed exactly the way the user types (see 'How the user types'): their casing, punctuation, spellings, emoji and length. A line break inside one means separate messages sent in a row."),
+  messageSuggestions: z
+    .array(z.string())
+    .describe(
+      "Exactly 6 ready-to-send messages, best first, each built on `moment`: fit its tone (no flirting when they're upset or low), do what it needs, and never ask or rephrase anything in alreadyCovered or already sent in this conversation. A daily check-in ('what did u do today') is fine if not sent today. When waitingOn is 'them', no new question: at most one light, non-pushy follow-up, the rest for after they reply. Typed exactly the way the user types (see 'How the user types'): their casing, punctuation, spellings, emoji and length. A line break inside one means separate messages sent in a row.",
+    ),
   conversationStarters: z.array(z.string()).describe("Topics or questions that would land well with them, based on their interests"),
   avoid: z.array(z.string()).describe("2-5 things the user should stop or avoid doing"),
 });
 
-const advice = analysisSchema.pick({ openThreads: true, thingsToCareAbout: true, nextMoves: true, messageSuggestions: true, conversationStarters: true, avoid: true }).shape;
+const advice = analysisSchema.pick({ openThreads: true, thingsToCareAbout: true, moment: true, nextMoves: true, messageSuggestions: true, conversationStarters: true, avoid: true }).shape;
 /** Advice is rewritten on every model update; these judgement sections only when new information moves them. */
 export const ADVICE_KEYS = ["whatChanged", ...Object.keys(advice)] as ("whatChanged" | keyof typeof advice)[];
 export const PATCH_SECTIONS = ["status", "signals", "mind", "emotional"] as const;

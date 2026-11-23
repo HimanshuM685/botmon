@@ -6,7 +6,7 @@ import { generateText, Output } from "ai";
 import { db } from "@/lib/db";
 import type { Prisma } from "@/generated/prisma/client";
 import { alive } from "@/lib/trash";
-import { chatMessages, getActiveKey, loadChat } from "@/lib/data";
+import { chatMessages, getActiveKey } from "@/lib/data";
 import { budgetFor } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
 import { afterFailure, charsFor, retryable, type Tries } from "@/lib/ai/limits";
@@ -34,10 +34,15 @@ export const MEMORY_MODE = "memory";
 /** A read the page should show as running (not the quiet detail pass after it). */
 export const reading = (mode: string | null) => !!mode && mode !== MEMORY_MODE;
 
-/** The stored sittings still cover exactly the chat's messages (checked without loading the chat). */
-async function episodesMatch(chat: { id: string; msgCount: number; firstAt: Date; lastAt: Date }) {
-  const agg = await db.chatEpisode.aggregate({ where: { chatId: chat.id }, _sum: { msgCount: true }, _min: { fromTs: true }, _max: { toTs: true } });
-  return agg._sum.msgCount === chat.msgCount && agg._min.fromTs?.getTime() === chat.firstAt.getTime() && agg._max.toTs?.getTime() === chat.lastAt.getTime();
+/**
+ * The stored sittings still cover the chat's messages (checked without loading the chat). By count: messages only
+ * ever get added (merges), so a changed chat has a new count; syncEpisodes itself matches sittings by their times.
+ * Not by first/last time: those are the upload's first and last lines, which aren't the earliest and latest when an
+ * export runs back in time (a DST change), and the sittings would never match.
+ */
+async function episodesMatch(chat: { id: string; msgCount: number }) {
+  const agg = await db.chatEpisode.aggregate({ where: { chatId: chat.id }, _sum: { msgCount: true } });
+  return agg._sum.msgCount === chat.msgCount;
 }
 
 /**
@@ -139,7 +144,8 @@ const HISTORY_TRIES = 3;
 
 /** Run one step of the chat's background read. `again`: ms until the next step; undefined when the chain stops here. */
 export async function step(chatId: string): Promise<{ again?: number }> {
-  const chat = await db.chatUpload.findFirst({ where: { id: chatId, ...alive } });
+  // Not the messages (tens of MB): only the steps that need them load them (chatMessages).
+  const chat = await db.chatUpload.findFirst({ where: { id: chatId, ...alive }, omit: { cipher: true } });
   if (!chat?.readMode || !chat.readJob) return {};
   const wait = (chat.readNextAt?.getTime() ?? 0) - Date.now();
   if (wait > 0) return { again: wait };
@@ -176,17 +182,21 @@ export async function step(chatId: string): Promise<{ again?: number }> {
       // is left is embedded by the next read.
       const embedSome = async () => {
         if (!memory.embedLeft || secs() > 150) return;
-        await embedEpisodes(chat.id, key!).catch((e) => console.info("read job: embedding later", (e as Error)?.message?.slice(0, 160)));
+        // Cut off well before the step's time limit, so the step still saves its progress and frees its lock.
+        await embedEpisodes(chat.id, key!, startedAt + STEP_MAX_MS - 90_000).catch((e) => console.info("read job: embedding later", (e as Error)?.message?.slice(0, 160)));
       };
-      const memoryStep = async (what: string, run: () => Promise<unknown>) => {
-        await run();
+      /** `run` may return a failure that came with progress: the tries reset, and the next step waits as it says. */
+      const memoryStep = async (what: string, run: () => Promise<{ failure?: unknown } | unknown>) => {
+        const out = await run();
+        const failure = out && typeof out === "object" && "failure" in out ? out.failure : undefined;
         await embedSome();
         const now = await memoryWork(chat.id, key!);
         const parts = memoryParts(now.total);
         const done = parts - memoryParts(now.detailsLeft);
-        console.info(`read job: ${what}, ${now.total - now.detailsLeft}/${now.total} sittings read in ${secs()}s`, key!.provider);
-        await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: done });
-        return { again: 0 };
+        const waitMs = failure ? Math.max(5_000, retryable(failure)?.waitMs ?? 0) : 0;
+        console.info(`read job: ${what}, ${now.total - now.detailsLeft}/${now.total} sittings read in ${secs()}s${failure ? `, some calls failed (${(failure as Error)?.message?.slice(0, 120)})` : ""}`, key!.provider);
+        await mine({ readNextAt: new Date(Date.now() + waitMs), readWait: failure ? (retryable(failure)?.kind === "rate" ? "rate" : "busy") : null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: done });
+        return { again: waitMs };
       };
       /** The read is done: the detail pass next if it has work, else the job ends. */
       const afterRead = async (data: Prisma.ChatUploadUpdateManyMutationInput) => {
@@ -195,7 +205,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         return { count, next: more && count ? { again: 0 } : {} };
       };
       if (chat.readMode === MEMORY_MODE) {
-        if (!synced) return await memoryStep("sittings stored", () => loadChat(chat.cipher).then((all) => syncEpisodes(chat, all)));
+        if (!synced) return await memoryStep("sittings stored", () => chatMessages(chat.id).then((all) => syncEpisodes(chat, all)));
         if (memory.detailsLeft)
           return await memoryStep("details read", () => readDetails(person, chat, key!, { signal: callSignal(), temperature: chat.readBadTries > 0 ? 0.3 : 0, stillHere }));
         await embedSome();
@@ -205,7 +215,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         return {};
       }
 
-      const msgs = await loadChat(chat.cipher);
+      const msgs = await chatMessages(chat.id);
       const budget = budgetFor(key);
       const stored = await loadUnits(chat.id);
       const work = historyWork(msgs, stored, budget, chat.tzOffset);
@@ -310,7 +320,8 @@ export async function step(chatId: string): Promise<{ again?: number }> {
       }
       // Timed out twice in a row: the calls are too big for this model's speed. Smaller parts from here on (one slow
       // answer alone may just be a busy moment, and parts already read are kept either way).
-      if (failure?.kind === "slow" && key && chat.readWait === "slow" && Math.floor(budgetFor(key) * 0.7) >= MIN_BUDGET)
+      // Not in the detail pass: its calls run six at once on the cheap model, so slowness there says nothing about reads.
+      if (failure?.kind === "slow" && key && chat.readMode !== MEMORY_MODE && chat.readWait === "slow" && Math.floor(budgetFor(key) * 0.7) >= MIN_BUDGET)
         await db.apiKey.update({ where: { id: key.id }, data: { charBudget: Math.floor(budgetFor(key) * 0.7) } });
       const next = failure && afterFailure(failure, { busy: chat.readTries, bad: chat.readBadTries, rate: chat.readRateTries });
       if (next && "waitMs" in next) {

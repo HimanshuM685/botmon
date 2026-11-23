@@ -23,7 +23,7 @@ type Key = { provider: ProviderId; apiKey: string };
  * `dims`: fewer numbers per vector where the model allows it (Gemini, OpenAI); `strict`: throw instead of null, so a
  * background job can tell a rate limit from a broken key.
  */
-export async function embed(key: Key, values: string[], opts: { dims?: number; strict?: boolean } = {}): Promise<number[][] | null> {
+export async function embed(key: Key, values: string[], opts: { dims?: number; strict?: boolean; signal?: AbortSignal } = {}): Promise<number[][] | null> {
   const model = embedModelFor(key.provider);
   if (!model || !values.length) return null;
   try {
@@ -33,7 +33,7 @@ export async function embed(key: Key, values: string[], opts: { dims?: number; s
         headers: { authorization: `Bearer ${key.apiKey}`, "content-type": "application/json" },
         // One input_type for labels and for looked-up words: they must land in the same space.
         body: JSON.stringify({ model, input: values, input_type: "passage", encoding_format: "float" }),
-        signal: AbortSignal.timeout(15_000),
+        signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(15_000), opts.signal]) : AbortSignal.timeout(15_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { data: { index: number; embedding: number[] }[] };
@@ -43,6 +43,7 @@ export async function embed(key: Key, values: string[], opts: { dims?: number; s
       model: key.provider === "GEMINI" ? createGoogle({ apiKey: key.apiKey }).embedding(model) : createOpenAI({ apiKey: key.apiKey }).embedding(model),
       values,
       maxRetries: 1,
+      abortSignal: opts.signal,
       // Gemini's default is 3072 numbers a label; 768 is plenty for names.
       ...(key.provider === "GEMINI" ? { providerOptions: { google: { outputDimensionality: opts.dims ?? 768 } } } : {}),
       ...(key.provider === "OPENAI" && opts.dims ? { providerOptions: { openai: { dimensions: opts.dims } } } : {}),

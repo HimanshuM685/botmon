@@ -13,7 +13,8 @@ import { emotionMap, FACTS_SHARE, factsWithinBudget } from "@/lib/facts";
 import { adviceStale, contextHash } from "@/lib/context";
 import { applyPatch, changedSince, enoughMemory } from "@/lib/model";
 import { computeScore } from "@/lib/stats";
-import { applyVoice, voiceForPrompt } from "@/lib/voice";
+import { applyVoice, baselineForPrompt, voiceForPrompt } from "@/lib/voice";
+import { dropRepeats } from "@/lib/suggest";
 import { loadSelf, selfVoice } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { claimModelRun, releaseModelRun } from "@/lib/model-lock";
@@ -65,7 +66,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const { added, removed } = changedSince(allFacts, read?.adviceAt ?? null);
   const msgs = chat ? await chatMessages(chat.id) : [];
   // This chat's voice, stored at upload; without a chat, the user's voice from their other chats.
-  const voice = chat ? (await getVoices(chat, msgs)).me : await selfVoice(userId);
+  const voices = chat ? await getVoices(chat, msgs) : null;
+  const voice = voices ? voices.me : await selfVoice(userId);
   const emotion = emotionMap(facts); // shares the memory budget below
   const graph = await loadGraph(person, facts);
   // The graph around what changed, plus what the links show overall.
@@ -75,6 +77,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const memoryBudget = Math.max(2_000, Math.floor(budgetFor(key) * FACTS_SHARE) - emotion.length - graphBrief.length - known.join(", ").length);
   const base = {
     voice: voice ? voiceForPrompt(voice) : undefined,
+    theirBaseline: voices?.them ? baselineForPrompt(voices.them) : undefined,
     personName: person.name,
     relation: person.relation as RelationId,
     gender: person.gender,
@@ -112,7 +115,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
       onDone: async () => {
         try {
           const generated = await result.output;
-          const output: Analysis = { ...generated, status: { ...generated.status, score: computeScore(generated.signals, null) } };
+          const output: Analysis = { ...generated, messageSuggestions: generated.messageSuggestions.slice(0, 4), status: { ...generated.status, score: computeScore(generated.signals, null) } };
           await db.analysis.update({ where: { id: run.id }, data: { result: output, contextHash: hash, adviceAt: startedAt } });
           await markReachedGoals(person.id, output.signals);
           await release();
@@ -130,7 +133,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const result = streamText({
     model,
     system: SYSTEM,
-    prompt: buildModelPatchPrompt({ ...base, read: saved, msgs, added, removed, findings: findings.filter((f) => !read.adviceAt || f.firstSeenAt > read.adviceAt).map((f) => f.text) }),
+    prompt: buildModelPatchPrompt({ ...base, read: saved, msgs, added, removed, findings: findings.filter((f) => !read.adviceAt || f.firstSeenAt > read.adviceAt).map((f) => f.text), readThrough: read.throughAt?.getTime() }),
     output: Output.object({ schema: modelPatchSchema }),
     ...sampling,
   });
@@ -140,8 +143,9 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     onDone: async () => {
       try {
         const patched = applyPatch(saved, await result.output, base.stats);
-        // Held to the user's own typing habits, whatever the model did.
-        const merged: Analysis = { ...patched, messageSuggestions: patched.messageSuggestions.map((m) => applyVoice(m, voice)), voiceFrom: voice?.count ?? patched.voiceFrom };
+        // Nothing the user has just sent, the best 4, held to their own typing habits whatever the model did.
+        const fresh = chat ? dropRepeats(patched.messageSuggestions, msgs, chat.myName, chat.tzOffset) : patched.messageSuggestions;
+        const merged: Analysis = { ...patched, messageSuggestions: fresh.slice(0, 4).map((m) => applyVoice(m, voice)), voiceFrom: voice?.count ?? patched.voiceFrom };
         await db.analysis.update({ where: { id: read.id }, data: { result: merged, contextHash: hash, adviceAt: startedAt } });
         await markReachedGoals(person.id, merged.signals);
       } finally {

@@ -1,0 +1,121 @@
+import type { Msg } from "./parsers/types";
+import { toLocal } from "./stats";
+import { COMMON, NEW_CONVO_GAP, NOT_TYPED } from "./voice";
+
+/**
+ * What to send next, the exact part: where the conversation stands and what the user already asked (for the prompt),
+ * and a guard that drops suggestions the user has just sent. The model reads the moment (mood, tone, what's needed)
+ * from this; code keeps it from repeating. Pure and client-safe (lib/ai/prompt.ts is imported by the person form).
+ */
+
+const DAY = 24 * 3600_000;
+const ASKED_DAYS = 60;
+const ASKED_MAX = 15;
+/** Share of a suggestion's content words found in one sent message that makes it a repeat. */
+const SAME = 0.6;
+
+const WH = new Set("what whats wht wat why how when where who whom which kya kaise kaisa kaisi kab kahan kaha kidhar kyu kyun kyon kaun kon kitna kitni kitne".split(" "));
+const AUX = new Set("do did does are is was were can could will would have has should shall".split(" "));
+const YOU = new Set("you u ya ur tu tum tume tumhe aap".split(" "));
+/** Hinglish fillers, pronouns and advice verbs ("ask her…") that say nothing about the topic (COMMON has the English ones). */
+const FILLER = new Set("ur hai hain ho tha thi the na ki ka ke ko se mai main mera meri tera teri tu tum tumhe aap bhi toh to kya kaise kab kyu kyun haan ha nhi nahi nai ya yaar re hmm acha accha ok okk does your yours ask tell say send text most more much very really".split(" "));
+
+const typed = (m: Msg) => !!m.text.trim() && !NOT_TYPED.test(m.text.trim());
+
+function words(text: string) {
+  return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/** Topic words: no common words or fillers, cut to 4 letters so "likes", "liked" and "like" meet. */
+export function contentWords(text: string) {
+  return new Set(words(text).filter((w) => w.length >= 2 && !COMMON.has(w) && !FILLER.has(w) && !WH.has(w)).map((w) => (w.length > 4 ? w.slice(0, 4) : w)));
+}
+
+/** How much of `line`'s topic one sent message already covers, 0..1. A line with no topic words covers nothing. */
+export function overlap(line: string, sent: string) {
+  const a = contentWords(line);
+  if (!a.size) return 0;
+  const b = contentWords(sent);
+  return [...a].filter((w) => b.has(w)).length / a.size;
+}
+
+export function isQuestion(text: string) {
+  const t = text.trim();
+  if (/\?\s*\p{Extended_Pictographic}*\s*$/u.test(t)) return true;
+  const [first, second] = words(t);
+  return WH.has(first) || (AUX.has(first) && YOU.has(second));
+}
+
+/** Start of the conversation the chat ends in: back from the last message until a 6h gap. */
+function conversationStart(msgs: Msg[]) {
+  let i = msgs.length - 1;
+  while (i > 0 && msgs[i].ts - msgs[i - 1].ts < NEW_CONVO_GAP) i--;
+  return msgs[i]?.ts ?? 0;
+}
+
+const stamp = (ts: number, tz: number) => toLocal(ts, tz).toISOString().slice(0, 16).replace("T", " ");
+
+/** The user's messages a suggestion must not repeat: the current conversation, and everything sent today. */
+function recentlySent(msgs: Msg[], me: string, tz: number, now: number) {
+  const today = toLocal(now, tz).toISOString().slice(0, 10);
+  const since = conversationStart(msgs);
+  return msgs.filter((m) => m.sender === me && typed(m) && (m.ts >= since || toLocal(m.ts, tz).toISOString().slice(0, 10) === today)).map((m) => m.text);
+}
+
+/** How close a suggestion (each of its lines) comes to something already sent: the worst line's best match. */
+const closeness = (s: string, sent: string[]) => Math.max(0, ...s.split("\n").filter(Boolean).map((line) => Math.max(0, ...sent.map((t) => overlap(line, t)))));
+
+/**
+ * Drop suggestions the user has just sent (this conversation or today), keeping the order. Never empty: when every
+ * one repeats, the least similar stays.
+ * ponytail: topic-word overlap in a short window only; older repeats are left to the model with the asked-questions
+ * list. Add embeddings if paraphrases slip through.
+ */
+export function dropRepeats(suggestions: string[], msgs: Msg[], me: string, tz: number, now = Date.now()) {
+  const sent = recentlySent(msgs, me, tz, now);
+  if (!sent.length || !suggestions.length) return suggestions;
+  const scored = suggestions.map((s) => ({ s, c: closeness(s, sent) }));
+  const kept = scored.filter((x) => x.c < SAME).map((x) => x.s);
+  return kept.length ? kept : [scored.reduce((a, b) => (b.c < a.c ? b : a)).s];
+}
+
+/** Which of last time's suggestions the user has since sent (any message of theirs after `since`). */
+export function sentSince(suggestions: string[], msgs: Msg[], me: string, since: number) {
+  const sent = msgs.filter((m) => m.sender === me && m.ts > since && typed(m)).map((m) => m.text);
+  return suggestions.filter((s) => sent.length && closeness(s, sent) >= SAME);
+}
+
+/**
+ * Where the chat stands, computed: who spoke last, whether the user is waiting on a reply, and the questions the
+ * user already asked (answered or not), so advice never asks them again.
+ */
+export function whereItStands(msgs: Msg[], me: string, tz: number, now = Date.now()) {
+  // The tail is enough: questions older than ASKED_DAYS are dropped anyway, and a huge chat stays cheap.
+  const said = msgs.slice(-5_000).filter(typed);
+  const last = said.at(-1);
+  if (!last) return "";
+  const days = Math.floor((now - last.ts) / DAY);
+  let run = 0;
+  for (let i = said.length - 1; i >= 0 && said[i].sender === me; i--) run++;
+  const asked: string[] = [];
+  const seen = new Set<string>();
+  for (let i = said.length - 1; i >= 0 && asked.length < ASKED_MAX; i--) {
+    const m = said[i];
+    if (m.ts < last.ts - ASKED_DAYS * DAY) break;
+    if (m.sender !== me || !isQuestion(m.text)) continue;
+    const key = [...contentWords(m.text)].sort().join(" ") || m.text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const reply = said.slice(i + 1).find((x) => x.sender !== me);
+    const answered = !!reply && reply.ts - m.ts < NEW_CONVO_GAP;
+    asked.push(`- [${stamp(m.ts, tz)}] "${m.text.trim().slice(0, 160)}" (${answered ? "answered" : "no reply to it yet"})`);
+  }
+  return [
+    `Where the chat stands (computed, exact):`,
+    `- Last message: ${stamp(last.ts, tz)} from ${last.sender === me ? "the user" : "them"}${days ? `, ${days} day${days > 1 ? "s" : ""} before today` : ", today"}.`,
+    run ? `- The user sent the last ${run} message${run > 1 ? "s" : ""} and has no reply yet: the user is waiting on them.` : `- They sent the last message: the user owes the reply.`,
+    asked.length
+      ? `Questions the user already asked, newest first. Never suggest asking any of these again, however it is worded. If answered, build on the answer; if not, don't repeat it:\n${asked.join("\n")}`
+      : "",
+  ].filter(Boolean).join("\n");
+}

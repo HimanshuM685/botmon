@@ -342,7 +342,15 @@ function Report({ a, advice, personId, chatNumbers, progress }: {
   const score = a.status?.score == null ? undefined : Math.round(a.status.score);
   const copy = (s: string) => navigator.clipboard.writeText(s).then(() => toast.success("Copied"));
   const moves = a.nextMoves?.filter((m) => m?.action) ?? [];
-  const sends = a.messageSuggestions?.filter((s): s is string => !!s) ?? [];
+  // The model writes 6; the saved read keeps the best 4 that aren't repeats (lib/suggest.ts). Mid-stream, the first 4.
+  const sends = a.messageSuggestions?.filter((s): s is string => !!s).slice(0, 4) ?? [];
+  // Why these: the moment they were written for (reads before it existed have none).
+  const covered = a.moment?.alreadyCovered?.filter(Boolean) ?? [];
+  const moment = [
+    a.moment?.theirMood,
+    a.moment?.waitingOn === "them" ? "waiting on their reply" : a.moment?.waitingOn === "user" ? "your turn to reply" : "",
+    covered.length ? `already covered: ${covered.slice(0, 3).join(", ")}` : "",
+  ].filter(Boolean).join(" · ");
   const dos = merged(a.thingsToCareAbout, a.emotional?.comforts);
   const donts = merged(a.avoid, a.emotional?.triggers);
   const unfinished = merged(a.openThreads);
@@ -414,6 +422,7 @@ function Report({ a, advice, personId, chatNumbers, progress }: {
         {sends.length > 0 && (
           <div className={pad}>
             <Block title="Send one of these" tone="heart">
+              {moment && <p className="-mt-1 mb-4 text-xs text-dim">{moment}</p>}
               <ul className="space-y-2">
                 {sends.map((s, i) => (
                   <li key={i} className="flex items-start justify-between gap-3">

@@ -16,7 +16,7 @@ const read = {
 } as unknown as Analysis;
 const patch = (over: Partial<ModelPatch>): ModelPatch => ({
   whatChanged: "they fought", status: null, signals: null, mind: null, emotional: null,
-  openThreads: [], thingsToCareAbout: [], nextMoves: [{ action: "apologise", why: "", when: "today" }], messageSuggestions: ["sorry"], conversationStarters: [], avoid: [],
+  openThreads: [], thingsToCareAbout: [], moment: { theirMood: "", tone: "upset", waitingOn: "user", alreadyCovered: [], needs: "" }, nextMoves: [{ action: "apologise", why: "", when: "today" }], messageSuggestions: ["sorry"], conversationStarters: [], avoid: [],
   ...over,
 });
 
