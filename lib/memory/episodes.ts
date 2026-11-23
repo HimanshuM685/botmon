@@ -132,13 +132,13 @@ export async function readDetails(person: Person, chat: Chat, key: Key, opts: { 
         maxRetries: 3,
         abortSignal: opts.signal,
       });
-    // The cheapest model first; a key that can't use it reads with the user's own model.
+    // The cheapest model first. Busy, rate-limited, not on this key or out of credits: the user's own model instead
+    // (the one their reads already work on). Not when the step itself ran out of time.
     let output;
     try {
       ({ output } = await call(CHEAP_MODEL[key.provider]));
     } catch (e) {
-      const status = (e as { statusCode?: number })?.statusCode;
-      if (CHEAP_MODEL[key.provider] === key.model || !(status === 404 || status === 400 || /not found|does not exist|not available/i.test(String((e as Error)?.message)))) throw e;
+      if (CHEAP_MODEL[key.provider] === key.model || opts.signal?.aborted) throw e;
       ({ output } = await call(key.model));
     }
     return { batch, lines, output };
@@ -169,31 +169,33 @@ async function saveDetails(person: Person, chat: Chat, key: Key, facts: Known[],
   const found = factsFromAnalysis({ keyFacts: details });
   const at = (i: number) => lines[Math.min(lines.length - 1, Math.max(0, (details[i]?.line ?? 1) - 1))];
   const byText = new Map(facts.map((f) => [normalizeFact(f.text), f]));
-  // Said again: the memory gets stronger (deleted ones stay deleted: the user said no).
+  // Said again later in the chat: the memory gets stronger (deleted ones stay deleted: the user said no). Only lines
+  // after its last sighting count: a sitting read again (rebuilt after a merge) repeats what was counted already, and
+  // the first sighting of a memory from a chapter or read only dates it (that was the same mention).
   const again = found.flatMap((f, i) => {
     const old = byText.get(normalizeFact(f.text));
     return old && old.id && !old.deletedAt ? [{ old, ts: at(i).m.ts }] : [];
   });
-  if (again.length)
-    await db.$transaction(again.map(({ old, ts }) => {
-      old.mentions += 1;
-      old.lastSeenAt = new Date(Math.max(ts, old.lastSeenAt?.getTime() ?? 0));
-      // updatedAt kept: being said again is not an edit (lib/facts.ts untouched).
-      return db.personFact.update({ where: { id: old.id }, data: { mentions: { increment: 1 }, lastSeenAt: old.lastSeenAt, ...(old.updatedAt ? { updatedAt: old.updatedAt } : {}) } });
-    }));
+  const updates = again.flatMap(({ old, ts }) => {
+    const last = old.lastSeenAt?.getTime();
+    if (last !== undefined && ts <= last) return [];
+    if (last !== undefined) old.mentions += 1;
+    old.lastSeenAt = new Date(ts);
+    // updatedAt kept: being said again is not an edit (lib/facts.ts untouched).
+    return [db.personFact.update({ where: { id: old.id }, data: { ...(last !== undefined ? { mentions: { increment: 1 } } : {}), lastSeenAt: old.lastSeenAt, ...(old.updatedAt ? { updatedAt: old.updatedAt } : {}) } })];
+  });
+  if (updates.length) await db.$transaction(updates);
   const fresh = newFacts(facts.map((f) => f.text), found);
   if (!fresh.length) return;
   const index = new Map(found.map((f, i) => [f, i]));
-  await saveMemories(
-    person,
-    fresh.map((f) => {
-      const l = at(index.get(f) ?? 0);
-      return { ...f, episodeId: l.episodeId, saidAt: new Date(l.m.ts), lastSeenAt: new Date(l.m.ts) };
-    }),
-    { source: "ANALYSIS", chatId: chat.id },
-    key,
-  );
-  for (const f of fresh) facts.push({ id: "", text: f.text, deletedAt: null, mentions: 1, lastSeenAt: null, updatedAt: null });
+  const rows = fresh.map((f) => {
+    const l = at(index.get(f) ?? 0);
+    return { ...f, episodeId: l.episodeId, saidAt: new Date(l.m.ts), lastSeenAt: new Date(l.m.ts) };
+  });
+  const { ids } = await saveMemories(person, rows, { source: "ANALYSIS", chatId: chat.id }, key);
+  // Known by id from here on, so the same detail said again later in this step is counted too.
+  const now = new Date();
+  rows.forEach((f, i) => facts.push({ id: ids[i], text: f.text, deletedAt: null, mentions: 1, lastSeenAt: f.lastSeenAt, updatedAt: now }));
 }
 
 const literal = (v: number[]) => `[${v.join(",")}]`;
@@ -211,7 +213,10 @@ export async function embedEpisodes(chatId: string, key: Key) {
     const group = rows.slice(i, i + embedBatch(key.provider));
     const vectors = await embed(key, group.map((r) => episodeLines(r.cipher).map((m) => `${m.sender}: ${m.text}`).join("\n").slice(0, 6_000)), { dims: EMBED_DIMS, strict: true });
     if (!vectors) throw new Error("Embedding failed");
-    await db.$transaction(group.map((r, j) => db.$executeRaw`UPDATE "ChatEpisode" SET "embedding" = ${literal(vectors[j])}::vector, "embedModel" = ${model} WHERE "id" = ${r.id}`));
+    // One statement: a transaction of ~100 updates outlasts the transaction timeout on a far-away database.
+    await db.$executeRaw`UPDATE "ChatEpisode" AS e SET "embedding" = v.vec::vector, "embedModel" = ${model}
+      FROM unnest(${group.map((r) => r.id)}::text[], ${vectors.map(literal)}::text[]) AS v(id, vec)
+      WHERE e."id" = v.id`;
     done += group.length;
   }
   return done;

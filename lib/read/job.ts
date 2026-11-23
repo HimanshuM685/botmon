@@ -26,6 +26,13 @@ import { embedEpisodes, memoryWork, readDetails, syncEpisodes } from "@/lib/memo
 /** Progress units of the detail pass: about one detail call's worth of sittings each. */
 const SITTINGS_PER_PART = 6;
 const memoryParts = (sittings: number) => Math.ceil(sittings / SITTINGS_PER_PART);
+/**
+ * readMode after the read itself is saved: the detail pass still running over the chat's sittings. Quiet: the page
+ * shows the read as done, and a failure here only ends the pass (the next read picks it up again).
+ */
+export const MEMORY_MODE = "memory";
+/** A read the page should show as running (not the quiet detail pass after it). */
+export const reading = (mode: string | null) => !!mode && mode !== MEMORY_MODE;
 
 /** The stored sittings still cover exactly the chat's messages (checked without loading the chat). */
 async function episodesMatch(chat: { id: string; msgCount: number; firstAt: Date; lastAt: Date }) {
@@ -86,8 +93,9 @@ const newJob = () => randomUUID();
  * chain broke is started again.
  */
 export async function startRead(origin: string, chat: { id: string; readMode: string | null; readJob: string | null; readNextAt: Date | null; historyLockUntil: Date | null }, mode: "auto" | "full") {
-  // A mode with no job id (set before jobs had ids) can never run a step: start it afresh.
-  if (chat.readMode && chat.readJob) {
+  // A mode with no job id (set before jobs had ids) can never run a step: start it afresh. So does the quiet detail
+  // pass: the read asked for must not wait out its backoff (it picks up again after this read).
+  if (chat.readMode && chat.readJob && chat.readMode !== MEMORY_MODE) {
     if (chat.readMode !== mode) await db.chatUpload.updateMany({ where: { id: chat.id, readMode: { not: null } }, data: { readMode: mode } });
     return resumeIfStalled(origin, chat);
   }
@@ -140,7 +148,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
   // Every write about the job goes through here, and only lands while it is still this job (not stopped, not restarted).
   const job = chat.readJob;
   const mine = (data: Prisma.ChatUploadUpdateManyMutationInput) => db.chatUpload.updateMany({ where: { id: chat.id, readJob: job }, data });
-  const fail = (error: string) => mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readError: error });
+  const fail = (error: string) => mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, ...(chat.readMode === MEMORY_MODE ? {} : { readError: error }) });
   const due = (at: Date, readWait: string, tries?: Tries) => mine({ readNextAt: at, readWait, ...(tries ? { readTries: tries.busy, readBadTries: tries.bad, readRateTries: tries.rate ?? 0 } : {}) });
 
   const startedAt = Date.now();
@@ -158,23 +166,44 @@ export async function step(chatId: string): Promise<{ again?: number }> {
       // Removed or moved to someone else while this step ran: the job ends, and nothing of it lands on this person.
       const stillHere = async () => !!(await db.chatUpload.findFirst({ where: { id: chat.id, personId: person.id, deletedAt: null, readJob: job }, select: { id: true } }));
 
-      // Total recall first (lib/memory): every sitting stored, read for details, and embedded, before chapters.
-      // Only the sync step needs the whole chat; detail and embedding steps load just the sittings they read.
+      // Total recall (lib/memory): every sitting stored and read for details, after the read is saved (MEMORY_MODE), so
+      // the read never waits on it or fails with it. Only the sync step needs the whole chat; detail steps load just
+      // the sittings they read.
       const memory = await memoryWork(chat.id, key);
       const synced = await episodesMatch(chat);
+      // Meaning vectors ride along with each step, best effort, and never hold the read up: a free Gemini key embeds
+      // ~1,000 texts a day, weeks for a 5-lakh chat. Recall uses the vectors there are and words for the rest; what
+      // is left is embedded by the next read.
+      const embedSome = async () => {
+        if (!memory.embedLeft || secs() > 150) return;
+        await embedEpisodes(chat.id, key!).catch((e) => console.info("read job: embedding later", (e as Error)?.message?.slice(0, 160)));
+      };
       const memoryStep = async (what: string, run: () => Promise<unknown>) => {
         await run();
+        await embedSome();
         const now = await memoryWork(chat.id, key!);
-        const parts = memoryParts(now.total) + (chat.readParts ? Math.max(0, chat.readParts - memoryParts(memory.total)) : 0);
-        const done = memoryParts(now.total) - memoryParts(now.detailsLeft);
+        const parts = memoryParts(now.total);
+        const done = parts - memoryParts(now.detailsLeft);
         console.info(`read job: ${what}, ${now.total - now.detailsLeft}/${now.total} sittings read in ${secs()}s`, key!.provider);
-        await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: Math.max(parts, done), readPartsDone: done });
+        await mine({ readNextAt: new Date(), readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: done });
         return { again: 0 };
       };
-      if (!synced) return await memoryStep("sittings stored", () => loadChat(chat.cipher).then((all) => syncEpisodes(chat, all)));
-      if (memory.detailsLeft)
-        return await memoryStep("details read", () => readDetails(person, chat, key!, { signal: callSignal(), temperature: chat.readBadTries > 0 ? 0.3 : 0, stillHere }));
-      if (memory.embedLeft) return await memoryStep("sittings embedded", () => embedEpisodes(chat.id, key!));
+      /** The read is done: the detail pass next if it has work, else the job ends. */
+      const afterRead = async (data: Prisma.ChatUploadUpdateManyMutationInput) => {
+        const more = !synced || memory.detailsLeft > 0;
+        const { count } = await mine(more ? { ...data, readMode: MEMORY_MODE, readNextAt: new Date(), readWait: null } : { ...data, readMode: null, readJob: null, readNextAt: null, readWait: null });
+        return { count, next: more && count ? { again: 0 } : {} };
+      };
+      if (chat.readMode === MEMORY_MODE) {
+        if (!synced) return await memoryStep("sittings stored", () => loadChat(chat.cipher).then((all) => syncEpisodes(chat, all)));
+        if (memory.detailsLeft)
+          return await memoryStep("details read", () => readDetails(person, chat, key!, { signal: callSignal(), temperature: chat.readBadTries > 0 ? 0.3 : 0, stillHere }));
+        await embedSome();
+        const { count } = await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0 });
+        // What the detail pass saved gets its graph work too.
+        if (count) scheduleGraphJob(person.userId, person);
+        return {};
+      }
 
       const msgs = await loadChat(chat.cipher);
       const budget = budgetFor(key);
@@ -186,8 +215,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
       const who = { personName: person.name, relation: person.relation as RelationId, gender: person.gender, myName: chat.myName, theirName: chat.theirName };
       // Rows from an older shape of this chat (older messages filled in mid-chat): read again.
       if (work.stale.length) await db.chatChapter.deleteMany({ where: { chatId: chat.id, id: { in: work.stale.map((u) => u.id) } } });
-      // Progress counts the detail pass (all done by now) and the chapters.
-      const parts = memoryParts(memory.total) + work.plan.length + work.groups.length;
+      const parts = work.plan.length + work.groups.length;
 
       const r = work.todo[0];
       if (r) {
@@ -225,7 +253,7 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         const read = await prepareRead(person.userId, person, chat, key, chat.readMode === "full", msgs);
         if ("refused" in read) {
           const { code, error } = read.refused!;
-          if (code === "up_to_date") return (await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null }), {});
+          if (code === "up_to_date") return (await afterRead({})).next;
           if (code === "hourly") return (await due(new Date(Date.now() + 600_000), "hourly"), { again: 600_000 });
           // The history changed under this step (a new export merged in): plan it again next step.
           if (code === "history_needed") {
@@ -258,12 +286,13 @@ export async function step(chatId: string): Promise<{ again?: number }> {
           await selfChanged(person.userId).catch(() => undefined);
           throw e;
         }
-        const { count } = await mine({ readMode: null, readJob: null, readNextAt: null, readWait: null, readTries: 0, readBadTries: 0, readRateTries: 0, readPartsDone: parts });
+        const { count, next } = await afterRead({ readTries: 0, readBadTries: 0, readRateTries: 0, readPartsDone: parts });
         // The read is saved either way, so its memories get their graph work even if the job was stopped meanwhile.
         scheduleGraphJob(person.userId, person);
         if (count) console.info(`read job: read saved in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
-        return {};
+        return next;
       }
+      await embedSome();
       // A step done: failures start counting again, and the page sees the progress (one more part read).
       const done = parts - work.todo.length - work.eraTodo.length + 1;
       console.info(`read job: ${r ? "chapter" : "era"} done, part ${done}/${parts} in ${secs()}s (rss ${rssMb()}MB)`, key.provider, key.model);
@@ -326,7 +355,7 @@ type JobRow = { readMode: string | null; readNextAt: Date | null; readWait: stri
 
 /** The background read as the page shows it: progress, any wait and why, or why it stopped. */
 export const jobStatus = (chat: JobRow) => ({
-  job: chat.readMode
+  job: reading(chat.readMode)
     ? { mode: chat.readMode, nextAt: chat.readNextAt?.toISOString() ?? null, wait: chat.readWait, tries: chat.readTries + chat.readBadTries, parts: chat.readParts, done: chat.readPartsDone }
     : null,
   failed: chat.readError,

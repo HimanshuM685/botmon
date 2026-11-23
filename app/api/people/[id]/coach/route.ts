@@ -137,7 +137,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     },
     findings,
     searchHistory: (query, limit) => searchCoachHistory(person.id, message.id, query, limit),
-    recallDetail: (query) => recallMemory(person.id, query, key, chat?.tzOffset ?? 0),
+    recallDetail: (query, words) => recallMemory(person.id, query, key, chat?.tzOffset ?? 0, words),
     voice,
     cap: capFor(total),
     // What the user tells about themself goes to their own profile, shared by every person (lib/self).

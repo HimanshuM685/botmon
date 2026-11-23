@@ -7,6 +7,7 @@ import { currentContextHash, getChatStats, getPerson } from "@/lib/data";
 import { adviceStale } from "@/lib/context";
 import { enoughMemory } from "@/lib/model";
 import { activityWindows } from "@/lib/stats";
+import { reading } from "@/lib/read/job";
 import { ChatUploader } from "@/components/chat-uploader";
 import { ChatActions } from "@/components/chat-actions";
 import { AnalysisView, type ReadState } from "@/components/analysis-view";
@@ -59,8 +60,8 @@ export default async function PersonPage({ params }: PageProps<"/people/[id]">) 
         personId={person.id}
         state={readState}
         hasChat={!!chat}
-        readingInBackground={!!chat?.readMode}
-        readFailed={chat?.readMode ? null : chat?.readError ?? null}
+        readingInBackground={reading(chat?.readMode ?? null)}
+        readFailed={reading(chat?.readMode ?? null) ? null : chat?.readError ?? null}
         canRun={!!chat && keyCount > 0}
         canSync={keyCount > 0}
         advice={{ stale: last ? adviceStale(last, context) : !chat && enoughMemory(factCount, person.notes), key: context, at: last?.adviceAt?.toISOString() }}

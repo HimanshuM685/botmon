@@ -66,14 +66,16 @@ const COMMON = new Set(
   "the and for you are was but not all can had her him his how its our out she who why yes yeah haan nahi hai hain kya toh bhi aur mein main tum tu ho tha thi kar karo the that this with have from what when where should would could about there their them they then than your will just like want been into some more also very really maybe think know going tell does did were here which because while after before again still even much many okay ok".split(" "),
 );
 
-/**
- * What a question searches for: each meaningful word as alternatives (the word itself, or its stem), so
- * "wontons" finds "wonton". Common words are dropped unless nothing else is left.
- */
-export function queryTerms(query: string, secret?: string): number[][] {
+/** The words a question searches for: common words dropped unless nothing else is left. */
+export function askedWords(query: string): string[] {
   const words = [...new Set(wordsOf(query))];
   const meaningful = words.filter((w) => !COMMON.has(w));
-  return (meaningful.length ? meaningful : words).map((w) => [...new Set([w, ...(w.length >= 6 ? [`${w.slice(0, 5)}*`] : w.length === 5 ? [`${w}*`] : [])])].map((f) => termHash(f, secret)));
+  return meaningful.length ? meaningful : words;
+}
+
+/** Each asked word as alternatives (the word itself, or its stem), so "wontons" finds "wonton". */
+export function queryTerms(query: string, secret?: string): number[][] {
+  return askedWords(query).map((w) => [...new Set([w, ...(w.length >= 6 ? [`${w.slice(0, 5)}*`] : w.length === 5 ? [`${w}*`] : [])])].map((f) => termHash(f, secret)));
 }
 
 /**

@@ -10,7 +10,10 @@
 // (NEEDLE_EMBED=none skips that). The test user is deleted at the end unless NEEDLE_KEEP=1.
 import "dotenv/config";
 import { gzipSync } from "node:zlib";
+import { generateText, tool } from "ai";
 import { db } from "@/lib/db";
+import { getModel } from "@/lib/ai/provider";
+import { REMEMBER_DETAIL } from "@/lib/ai/coach";
 import { encrypt } from "@/lib/crypto";
 import { embedModelFor, PROVIDER_IDS, PROVIDERS, type ProviderId } from "@/lib/ai/models";
 import { rateLimit } from "@/lib/ai/limits";
@@ -170,9 +173,9 @@ try {
     t = Date.now();
     const who = { id: person.id, name: person.name, relation: person.relation, gender: person.gender };
     await until("details", async () => {
-      await readDetails(who, chat, key, { stillHere: async () => true });
+      await readDetails(who, chat, key, { signal: AbortSignal.timeout(200_000), stillHere: async () => true });
       const left = (await memoryWork(chat.id, key)).detailsLeft;
-      process.stdout.write(`  details: ${left} sittings left\r`);
+      console.log(`  details: ${left} sittings left`);
       return left === 0;
     });
     const facts = await db.personFact.count({ where: { personId: person.id } });
@@ -183,12 +186,32 @@ try {
       await until("embed", async () => {
         await embedEpisodes(chat.id, key);
         const left = (await memoryWork(chat.id, key)).embedLeft;
-        process.stdout.write(`  embed: ${left} sittings left\r`);
+        console.log(`  embed: ${left} sittings left`);
         return left === 0;
       });
       console.log(`embed: done, ${secs(t)}`);
     }
   }
+
+  // Ask as the coach does: its model fills remember_detail's query and words (NEEDLE_EXPAND=none: the question alone).
+  const wordsFor = async (q: string) => {
+    if (!key || process.env.NEEDLE_EXPAND === "none") return [];
+    let words: string[] = [];
+    await until("words", async () => {
+      const { toolCalls } = await generateText({
+        model: getModel(key.provider, key.apiKey, key.model),
+        system: "You coach the user about Anushna, the person they chat with. Look the user's question up in your memory.",
+        prompt: q,
+        tools: { remember_detail: tool(REMEMBER_DETAIL) },
+        toolChoice: { type: "tool", toolName: "remember_detail" },
+        maxRetries: 0,
+        abortSignal: AbortSignal.timeout(60_000),
+      });
+      words = (toolCalls[0]?.input as { words?: string[] })?.words ?? [];
+      return true;
+    });
+    return words;
+  };
 
   // Ask. A hit names the thing and shows the day it was said.
   const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);
@@ -198,13 +221,15 @@ try {
   for (const [i, [, named, described, marker]] of NEEDLES.entries()) {
     const want = new RegExp(`\\b${marker}`, "i");
     for (const [kind, q] of [["named", named], ["described", described]] as const) {
+      const words = await wordsFor(q);
       const t0 = Date.now();
-      const out = await recallMemory(person.id, q, key, 0);
+      let out = "";
+      await until("recall", async () => ((out = await recallMemory(person.id, q, key, 0, words)), true));
       times.push(Date.now() - t0);
       const hit = want.test(out), dated = hit && out.includes(day(msgs[at[i]].ts));
       if (hit) score[kind]++;
       if (dated) score[`${kind}Dated`]++;
-      if (!hit) misses.push(`${kind}: "${q}" (wants ${marker})`);
+      if (!hit) misses.push(`${kind}: "${q}" [${words.join(", ")}] (wants ${marker})`);
     }
   }
   const facts = key ? await db.personFact.findMany({ where: { personId: person.id }, select: { text: true } }) : [];

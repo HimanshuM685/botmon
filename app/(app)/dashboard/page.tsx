@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { alive } from "@/lib/trash";
 import { Prisma } from "@/generated/prisma/client";
 import { MAX_PEOPLE } from "@/lib/data";
-import { requestOrigin, resumeIfStalled } from "@/lib/read/job";
+import { reading, requestOrigin, resumeIfStalled } from "@/lib/read/job";
 import { RELATIONS, timeAgo } from "@/lib/labels";
 import { PersonForm } from "@/components/person-form";
 import type { Analysis } from "@/lib/ai/schema";
@@ -54,7 +54,7 @@ export default async function Dashboard() {
                   {a && <span className="display text-4xl text-heart">{a.status.score}</span>}
                 </div>
                 <p className="mt-6 text-sm text-muted">
-                  {chat?.readMode ? <span className="animate-pulse text-mint">Reading in the background…</span> : a ? <em className="display text-base text-paper">{a.status.label}</em> : chat ? "Chat uploaded. Ready to analyze." : "No chat yet"}
+                  {reading(chat?.readMode ?? null) ? <span className="animate-pulse text-mint">Reading in the background…</span> : a ? <em className="display text-base text-paper">{a.status.label}</em> : chat ? "Chat uploaded. Ready to analyze." : "No chat yet"}
                 </p>
                 <p className="mt-1 text-xs text-dim">
                   {chat ? `${chat.msgCount.toLocaleString()} messages` : "Upload a WhatsApp or Instagram export"}

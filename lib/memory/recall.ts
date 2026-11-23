@@ -6,7 +6,7 @@ import { embedModelFor, type ProviderId } from "../ai/models";
 import { chatLine } from "../chat-lines";
 import { alive } from "../trash";
 import { episodeLines, EMBED_DIMS } from "./episodes";
-import { fuse, queryTerms, wordsOf } from "./split";
+import { askedWords, fuse, queryTerms, wordsOf } from "./split";
 
 /**
  * Total recall, asked: everything remembered about something, however long ago or casually it was said. Three
@@ -46,35 +46,46 @@ async function byMeaning(chatId: string, query: string, key: Key): Promise<strin
   return rows.map((r) => r.id);
 }
 
-/** Timeline memories mentioning any asked word, strongest and most recently said first. */
+/** Timeline memories mentioning the asked words: most of them first, then strongest (said most often), then newest. */
 async function memories(personId: string, query: string) {
-  const words = [...new Set(wordsOf(query))].filter((w) => w.length >= 3).slice(0, 8);
+  const words = askedWords(query).filter((w) => w.length >= 3).slice(0, 16);
   if (!words.length) return [];
-  return db.personFact.findMany({
-    where: { personId, ...alive, OR: words.map((w) => ({ text: { contains: w, mode: "insensitive" as const } })) },
+  const found = await db.personFact.findMany({
+    where: { personId, ...alive, OR: words.map((w) => ({ text: { contains: w.length >= 6 ? w.slice(0, 5) : w, mode: "insensitive" as const } })) },
     orderBy: [{ mentions: "desc" }, { lastSeenAt: { sort: "desc", nulls: "last" } }],
-    take: FACTS,
+    take: 200,
     select: { text: true, kind: true, happenedAt: true, saidAt: true, mentions: true },
   });
+  const hits = (text: string) => {
+    const said = new Set(wordsOf(text).flatMap((w) => [w, w.slice(0, 5)]));
+    return words.filter((w) => said.has(w.length >= 6 ? w.slice(0, 5) : w)).length;
+  };
+  // Stable sort: equal hits keep the database's order (strongest, newest).
+  return found.map((f) => ({ f, n: hits(f.text) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n).slice(0, FACTS).map((x) => x.f);
 }
 
-/** The recall as text for the model: memories, then the chat sittings behind the answer with their dates. */
-export async function recallMemory(personId: string, query: string, key: Key | null, tz: number): Promise<string> {
+/**
+ * The recall as text for the model: memories, then the chat sittings behind the answer with their dates. `words`:
+ * what the asker thinks may have been typed ("pet" -> cat, dog, billi), so a word search finds it without vectors.
+ */
+export async function recallMemory(personId: string, query: string, key: Key | null, tz: number, words: string[] = []): Promise<string> {
+  const asked = [query, ...words].join(" ");
   const chat = await db.chatUpload.findFirst({ where: { personId, ...alive }, orderBy: { createdAt: "desc" }, select: { id: true } });
-  const [facts, words, meaning] = await Promise.all([
-    memories(personId, query),
-    chat ? byWords(chat.id, query) : [],
+  const [facts, byWord, meaning] = await Promise.all([
+    memories(personId, asked),
+    chat ? byWords(chat.id, asked) : [],
     chat && key ? byMeaning(chat.id, query, key).catch(() => []) : [],
   ]);
-  const top = fuse([meaning, words]).slice(0, SITTINGS).map((x) => x.id);
+  const top = fuse([meaning, byWord]).slice(0, SITTINGS).map((x) => x.id);
   const rows = top.length ? await db.chatEpisode.findMany({ where: { id: { in: top } }, select: { id: true, cipher: true } }) : [];
-  const asked = new Set(wordsOf(query));
+  const wanted = new Set(askedWords(asked));
   const sittings = top.flatMap((id) => {
     const r = rows.find((x) => x.id === id);
     if (!r) return [];
     const lines = episodeLines(r.cipher);
     // Long sittings: the lines around the words asked about, not all forty.
-    const hit = lines.findIndex((m) => wordsOf(m.text).some((w) => asked.has(w)));
+    const score = lines.map((m) => wordsOf(m.text).filter((w) => wanted.has(w)).length);
+    const hit = score.some(Boolean) ? score.indexOf(Math.max(...score)) : -1;
     const from = hit < 0 ? 0 : Math.max(0, hit - 6);
     return [lines.slice(from, from + 14).map((m) => chatLine(m, tz)).join("\n")];
   });

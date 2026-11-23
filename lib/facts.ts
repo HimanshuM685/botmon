@@ -153,11 +153,11 @@ export function factsWithinBudget<T extends PromptFact>(facts: T[], maxChars: nu
   // One hop out: what the focused memories are also about ("wedding" pulls in "sister riya").
   const near = new Set(facts.filter((f) => sharesTag(f, wanted)).flatMap((f) => f.entities ?? []));
   const rank = (f: T) => (sharesTag(f, wanted) ? 2 : sharesTag(f, near) ? 1 : 0);
-  // Newest first (the list is oldest first), connected ones ahead of the rest, and among those the ones that came up
-  // most often (the detail pass counts mentions): what they keep saying outlasts what they said once. The rest of a
-  // big timeline stays reachable through recall (lib/memory/recall.ts).
+  // Newest first (the list is oldest first), connected ones ahead of the rest. Recency, not how often something came
+  // up: a new event must never be pushed out by small details said twice. Those stay reachable through recall
+  // (lib/memory/recall.ts), which ranks by mentions.
   const order = facts.map((_, i) => i).reverse();
-  order.sort((a, b) => (wanted.size ? rank(facts[b]) - rank(facts[a]) : 0) || (facts[b].mentions ?? 1) - (facts[a].mentions ?? 1));
+  if (wanted.size) order.sort((a, b) => rank(facts[b]) - rank(facts[a]));
   const keep = new Set<number>();
   let used = 0;
   for (const i of order) {

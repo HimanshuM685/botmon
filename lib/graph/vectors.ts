@@ -72,7 +72,10 @@ export async function nearestNodes(personId: string, model: string, vectors: num
 
 export async function storeEmbeddings(personId: string, model: string, rows: { id: string; vector: number[] }[]) {
   if (!rows.length) return;
-  await db.$transaction(rows.map((r) => db.$executeRaw`UPDATE "MemoryNode" SET "embedding" = ${literal(r.vector)}::vector, "embedModel" = ${model} WHERE "id" = ${r.id} AND "personId" = ${personId}`));
+  // One statement, not a transaction of one per row: a hundred round trips outlast the transaction timeout.
+  await db.$executeRaw`UPDATE "MemoryNode" AS n SET "embedding" = v.vec::vector, "embedModel" = ${model}
+    FROM unnest(${rows.map((r) => r.id)}::text[], ${rows.map((r) => literal(r.vector))}::text[]) AS v(id, vec)
+    WHERE n."id" = v.id AND n."personId" = ${personId}`;
 }
 
 /**
