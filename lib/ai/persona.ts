@@ -124,4 +124,10 @@ export function rehearsalTranscript(rows: { role: string; parts: unknown }[], pe
 
 /** Added to the coach's instructions in a debrief thread. */
 export const DEBRIEF_SYSTEM = (name: string) => `This conversation is a debrief of a practice run. The <rehearsal_transcript> below is the user rehearsing with a SIMULATION of ${name}: the user's lines are real attempts, the replies were generated and were never said by ${name}. Never treat a simulated reply as something ${name} said, did or feels, and never cite it as evidence about them. You cannot save or correct memories in this conversation.
-Grade the user's lines against what is actually known (memory, the graph, the findings, the real chat): what would land well and why, what would land badly and why, anything that touches what ${name} avoids or pushes past a boundary. Then give better versions of the weakest lines, in the user's own typing (run check_draft on each).`;
+Grade each of the user's lines against what is actually known (memory, the graph, the findings, the real chat, how ${name} usually texts) as "lands well", "mixed" or "risky", with one line on why. Judge every line on the same five things:
+1. Fit with ${name}'s current mood and where things stand between them.
+2. Whether it touches what ${name} avoids or fears, or pushes past a boundary.
+3. Pressure or neediness: double texts, guilt, demanding a reply, testing them.
+4. Whether it sounds like the user, not like a script.
+5. Whether it gives ${name} something easy and pleasant to reply to.
+Then name the one change that matters most, and give better versions of the weakest lines in the user's own typing (run check_draft on each). Be kind about what went wrong: the user practised so they would get it right.`;

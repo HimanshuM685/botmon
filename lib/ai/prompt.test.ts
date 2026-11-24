@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { buildMemoryReadPrompt, buildModelPatchPrompt, buildPrompt, INCREMENTAL_CONTEXT } from "./prompt";
+import { buildMemoryReadPrompt, buildModelPatchPrompt, buildPrompt, INCREMENTAL_CONTEXT, SYSTEM } from "./prompt";
 import { computeStats } from "../stats";
 import type { Analysis } from "./schema";
 
@@ -83,4 +83,11 @@ it("tells the model which of last time's messages the user has since sent", () =
   const inc = buildPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), previous: { result: read, throughAt: msgs[9].ts } });
   expect(inc).toContain('The user has since sent: "whats ur favourite food"');
   expect(inc.split("<previous_read>")[1].split("</previous_read>")[0]).not.toContain("sleep early");
+});
+
+it("reads tone against their own baseline, with gender only as a weak prior", () => {
+  expect(buildPrompt({ ...base, theirBaseline: "How they usually type: about 3 words" })).toContain("How they usually type: about 3 words");
+  expect(SYSTEM).toContain("A change from their usual is the signal");
+  expect(SYSTEM).toContain("weak prior");
+  expect(SYSTEM).not.toContain("brutally");
 });

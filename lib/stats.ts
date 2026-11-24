@@ -108,8 +108,9 @@ export function computeScore(signals: Signals, s: ChatStats | null, now = Date.n
     const w = activityWindows(s, now);
     const statParts = [
       clamp01(s.theyInitiatePct / 50), // they start half the conversations = fully even
-      s.myMedianReplyMin == null || s.theirMedianReplyMin == null ? 0.5 : clamp01((s.myMedianReplyMin + 1) / (s.theirMedianReplyMin + 1)),
-      s.myAvgLen ? clamp01(s.theirAvgLen / s.myAvgLen) : 0.5,
+      // ponytail: sqrt softens a busy replier (1 min vs 30 min: 0.25, not 0.06); a per-hour baseline if that still bites.
+      s.myMedianReplyMin == null || s.theirMedianReplyMin == null ? 0.5 : Math.sqrt(clamp01((s.myMedianReplyMin + 1) / (s.theirMedianReplyMin + 1))),
+      // No message-length ratio: a short texter is not less invested. Effort is rated against their own usual.
       // A chat younger than the two windows has nothing "before" to compare with: neutral, not "warming".
       s.days >= 60 && w.last30 + w.prev30 ? w.last30 / (w.last30 + w.prev30) : 0.5,
     ];

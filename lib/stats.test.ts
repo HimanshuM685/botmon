@@ -22,3 +22,11 @@ it("pulls thin chats toward 50", () => {
   expect(thin).toBeLessThan(thick);
   expect(thin).toBeGreaterThan(50);
 });
+
+it("does not mark a short texter down for message length, and softens slow replies", () => {
+  const s = computeStats(long, "Me");
+  expect(computeScore(all(2), { ...s, theirAvgLen: 5 }, now)).toBe(computeScore(all(2), { ...s, theirAvgLen: 500 }, now));
+  const busy = computeScore(all(2), { ...s, myMedianReplyMin: 1, theirMedianReplyMin: 30 }, now);
+  expect(busy).toBeLessThan(computeScore(all(2), { ...s, myMedianReplyMin: 30, theirMedianReplyMin: 30 }, now));
+  expect(busy).toBeGreaterThan(40); // at work, not gone
+});

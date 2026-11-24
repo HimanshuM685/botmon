@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { applyVoice, voiceForPrompt, voiceProfile } from "./voice";
+import { applyVoice, baselineForPrompt, voiceForPrompt, voiceProfile } from "./voice";
 
 const M = 60_000, H = 60 * M;
 let t = Date.UTC(2026, 10, 1);
@@ -55,4 +55,11 @@ it("holds suggestions to near-absolute habits, and only those", () => {
   expect(applyVoice(text, f)).toBe(text);
   expect(applyVoice(text, null)).toBe(text);
   expect(applyVoice("Hey! Fine.", voiceProfile(casual.slice(0, 5), "Me"))).toBe("Hey! Fine."); // too few messages to make rules
+});
+
+it("describes their usual typing for reads without telling the model to copy it", () => {
+  const b = baselineForPrompt(voiceProfile(casual, "Her")!);
+  expect(b).toContain("read their tone against this");
+  expect(b).toContain("<their_usual>");
+  expect(b).not.toMatch(/do not|Stay near|must look like/);
 });

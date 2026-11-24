@@ -25,14 +25,14 @@ const signal = (anchors: string) =>
 export const signalsSchema = z
   .object({
     reciprocity: signal("0 user carries everything; 2 roughly even but user leads; 4 they match or exceed the user's effort"),
-    warmth: signal("0 cold or curt; 2 friendly but neutral; 4 openly affectionate, playful, glad to hear from the user"),
+    warmth: signal("0 cold or curt; 2 friendly but neutral; 4 openly affectionate, playful, glad to hear from the user. Judge by their style: from a plain texter a 'haha', a tease or a remembered detail can be warm"),
     selfDisclosure: signal("0 shares nothing personal; 2 surface updates (plans, whereabouts); 4 shares feelings, worries, private things"),
     curiosityAboutUser: signal("0 never asks about the user; 2 occasional polite questions; 4 actively asks follow-ups about the user's life"),
     futureTalk: signal("0 no plans or 'next time'; 2 vague or joking plans; 4 proposes or confirms concrete plans"),
-    effort: signal("0 one-word or reaction-only replies; 2 short but engaged; 4 long, detailed, thoughtful replies"),
+    effort: signal("Against their own usual typing, not a generic texter: 0 flat, minimal replies even by their standard; 2 their usual; 4 clearly more than their usual to the user: longer, more detailed, picking up the user's topics"),
     consistency: signal("0 hot and cold, long unexplained gaps; 2 steady in bursts; 4 reliably present over time"),
   })
-  .describe("Rate each strictly by its anchors and only from observations. With thin evidence stay at 1-2; do not reach 0 or 4 without clear, repeated evidence.");
+  .describe("Rate each strictly by its anchors and only from observations, judged against how this person usually texts ('How they usually type'), never against a generic texter or their gender. With thin evidence stay at 1-2; do not reach 0 or 4 without clear, repeated evidence.");
 
 export const SELF_KINDS = ["INTEREST", "HOBBY", "VALUE", "HABIT", "TEXTING", "AFFECTION", "STRENGTH", "BLIND_SPOT", "PATTERN", "FACT"] as const;
 
