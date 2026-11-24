@@ -14,7 +14,7 @@ import { adviceStale, contextHash } from "@/lib/context";
 import { applyPatch, changedSince, enoughMemory } from "@/lib/model";
 import { computeScore } from "@/lib/stats";
 import { applyVoice, baselineForPrompt, voiceForPrompt } from "@/lib/voice";
-import { dropRepeats } from "@/lib/suggest";
+import { dropRepeats, whereItStands } from "@/lib/suggest";
 import { loadSelf, selfVoice } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
 import { claimModelRun, releaseModelRun } from "@/lib/model-lock";
@@ -78,6 +78,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const base = {
     voice: voice ? voiceForPrompt(voice) : undefined,
     theirBaseline: voices?.them ? baselineForPrompt(voices.them) : undefined,
+    stands: chat ? whereItStands(msgs, chat.myName, chat.tzOffset) || undefined : undefined,
     personName: person.name,
     relation: person.relation as RelationId,
     gender: person.gender,

@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { buildMemoryReadPrompt, buildModelPatchPrompt, buildPrompt, INCREMENTAL_CONTEXT, SYSTEM } from "./prompt";
 import { computeStats } from "../stats";
+import { whereItStands } from "../suggest";
 import type { Analysis } from "./schema";
 
 const H = 3600_000;
@@ -38,6 +39,7 @@ it("model update carries what changed, the current read, and only the tail of th
     removed: [{ kind: "FACT", text: "Has a boyfriend", happenedAt: null }],
     now: Date.UTC(2027, 0, 5),
     read,
+    stands: "Where the chat stands (computed, exact):\n- Last message: 2027-01-04 from them.",
   });
   expect(p).toContain("we had a fight yesterday");
   expect(p).toContain("Today is 2027-01-05");
@@ -48,7 +50,7 @@ it("model update carries what changed, the current read, and only the tail of th
   expect(part("previous_advice")).not.toContain("old move");
   expect(part("previous_advice")).not.toContain("old text");
   expect(p).toMatch(/Messages you suggested last time\. Not sent: "old text"/);
-  expect(part("where_it_stands")).toContain("Last message");
+  expect(part("where_it_stands")).toContain("Last message: 2027-01-04 from them");
   expect(part("new_information")).toContain("She got a new job");
   expect(part("new_information")).toMatch(/No longer true[\s\S]*Has a boyfriend/);
   expect(part("recent_chat").trim().split("\n")).toHaveLength(INCREMENTAL_CONTEXT);
@@ -76,11 +78,13 @@ it("carries the user's typing voice into reads and model updates, and only when 
 it("tells the model which of last time's messages the user has since sent", () => {
   const read = { messageSuggestions: ["whats ur favourite food", "sleep early"] } as unknown as Analysis;
   const chat = [...msgs.slice(0, 10), { sender: "Me", text: "whats your favourite food?", ts: msgs[10].ts }];
-  const p = buildModelPatchPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), read, added: [], removed: [], readThrough: msgs[9].ts });
+  const stands = whereItStands(chat, "Me", 0, chat.at(-1)!.ts);
+  const p = buildModelPatchPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), read, added: [], removed: [], readThrough: msgs[9].ts, stands });
   expect(p).toContain('The user has since sent: "whats ur favourite food". Never suggest those again');
   expect(p).toContain('Not sent: "sleep early"');
   expect(p).toMatch(/"whats your favourite food\?" \(no reply to it yet\)/);
-  const inc = buildPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), previous: { result: read, throughAt: msgs[9].ts } });
+  const inc = buildPrompt({ ...base, msgs: chat, stats: computeStats(chat, "Me"), previous: { result: read, throughAt: msgs[9].ts }, stands });
+  expect(inc).toContain("<where_it_stands>");
   expect(inc).toContain('The user has since sent: "whats ur favourite food"');
   expect(inc.split("<previous_read>")[1].split("</previous_read>")[0]).not.toContain("sleep early");
 });
@@ -90,4 +94,17 @@ it("reads tone against their own baseline, with gender only as a weak prior", ()
   expect(SYSTEM).toContain("A change from their usual is the signal");
   expect(SYSTEM).toContain("weak prior");
   expect(SYSTEM).not.toContain("brutally");
+});
+
+it("shows where the chat stands only when the caller built it, so its length is in the budget", () => {
+  expect(buildPrompt(base)).not.toContain("<where_it_stands>");
+  expect(buildPrompt({ ...base, stands: "Where the chat stands (computed, exact):" })).toContain("<where_it_stands>\nWhere the chat stands");
+  expect(buildMemoryReadPrompt({ personName: "Riya", relation: "CRUSH", gender: "FEMALE", notes: null, tzOffsetMin: 0, stands: "x" })).not.toContain("<where_it_stands>"); // no chat stats, no block
+});
+
+it("never copies last time's moves or messages forward", () => {
+  const prior = { status: { label: "Warm", explanation: "x" }, moment: { theirMood: "tired" }, nextMoves: [{ action: "ask about her day" }], messageSuggestions: ["how was ur day"], conversationStarters: ["movies"], likes: ["biryani"] } as unknown as Analysis;
+  const anchor = buildPrompt({ ...base, anchor: prior }).split("<prior_read>")[1].split("</prior_read>")[0];
+  expect(anchor).toContain("biryani");
+  for (const old of ["tired", "ask about her day", "how was ur day", "movies"]) expect(anchor).not.toContain(old);
 });

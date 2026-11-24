@@ -173,9 +173,11 @@ try {
     t = Date.now();
     const who = { id: person.id, name: person.name, relation: person.relation, gender: person.gender };
     await until("details", async () => {
-      await readDetails(who, chat, key, { signal: AbortSignal.timeout(200_000), stillHere: async () => true });
+      // Some calls can fail while others save: those sittings stay unread and this loop asks for them again.
+      const r = await readDetails(who, chat, key, { signal: AbortSignal.timeout(200_000), stillHere: async () => true });
       const left = (await memoryWork(chat.id, key)).detailsLeft;
-      console.log(`  details: ${left} sittings left`);
+      console.log(`  details: ${r.saved} sittings read, ${left} left${r.failure ? ` (some calls failed: ${(r.failure as Error)?.message?.slice(0, 120)}; retrying them)` : ""}`);
+      if (r.failure && left) await sleep(Math.min(rateLimit(r.failure)?.waitMs ?? 20_000, 300_000));
       return left === 0;
     });
     const facts = await db.personFact.count({ where: { personId: person.id } });

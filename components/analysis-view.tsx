@@ -180,6 +180,12 @@ export function AnalysisView({ personId, history, hasChat, readingInBackground =
     setAdviceFailed(false);
     adv.submit({});
   }
+  // The saved update has arrived (refresh brought a new adviceAt): show it, not the raw stream. The server drops
+  // repeats and applies the user's typing to the saved messages, so the streamed ones must not stay on top.
+  useEffect(() => {
+    if (!adv.isLoading) adv.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advice.at]);
   // Start by itself, once per context change.
   const triedFor = useRef<string | null>(null);
   useEffect(() => {

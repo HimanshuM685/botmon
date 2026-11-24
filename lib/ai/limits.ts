@@ -98,6 +98,15 @@ export function retryable(e: unknown): Failure | null {
   return null;
 }
 
+/**
+ * A step that saved some work while other calls failed: wait before the rest, at least 5s and what a rate limit asks,
+ * without spending tries (progress was made). Shown as a rate limit only when it was one.
+ */
+export function afterPartial(failure: unknown): { waitMs: number; wait: "rate" | "busy" } {
+  const f = retryable(failure);
+  return { waitMs: Math.max(5_000, f?.waitMs ?? 0), wait: f?.kind === "rate" ? "rate" : "busy" };
+}
+
 /** Growing waits for an overloaded model: 30s, 1m, 2m, 4m, 8m, then every 15m. At least what the provider asked. */
 export const backoffMs = (tries: number, hintMs = 0) => Math.max(hintMs, Math.min(30_000 * 2 ** tries, 15 * MINUTE));
 

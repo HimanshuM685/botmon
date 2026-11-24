@@ -10,7 +10,7 @@ import { budgetFor } from "@/lib/ai/models";
 import { computeScore } from "@/lib/stats";
 import { linkMemories, loadGraph, pruneGraph, saveMemories } from "@/lib/graph-store";
 import { applyVoice, baselineForPrompt, voiceForPrompt } from "@/lib/voice";
-import { dropRepeats } from "@/lib/suggest";
+import { dropRepeats, whereItStands } from "@/lib/suggest";
 import { goalsPrompt, markReachedGoals } from "@/lib/goals-store";
 import { learnFromChat, loadSelf, promoteMeEdges, selfChanged } from "@/lib/self/store";
 import { SELF_SHARE, selfForPrompt } from "@/lib/self/prompt";
@@ -71,9 +71,11 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
   const emotion = emotionMap(facts);
   const graph = await loadGraph(person, facts);
   const graphBrief = graph.brief().slice(0, 8_000), known = graph.known();
-  const chatBudget = Math.max(5_000, budget - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const stats = await getChatStats(chat, msgs);
   const { me: voice, them: theirVoice } = await getVoices(chat, msgs); // stored at upload (lib/data.ts)
+  const theirBaseline = theirVoice ? baselineForPrompt(theirVoice) : undefined;
+  const stands = whereItStands(msgs, chat.myName, chat.tzOffset) || undefined;
+  const chatBudget = Math.max(5_000, budget - memory.chars - emotion.length - graphBrief.length - known.join(", ").length - history.text.length - (theirBaseline?.length ?? 0) - (stands?.length ?? 0) - (prev ?? prior ? JSON.stringify((prev ?? prior)!.result).length : 0));
   const prompt = buildPrompt({
     personName: person.name,
     relation: person.relation as RelationId,
@@ -95,7 +97,8 @@ export async function prepareRead(userId: string, person: Person, chat: Chat, ke
     // The user's own profile: a prior for yourSide and for advice that fits them (lib/self).
     self: selfForPrompt({ ...(await loadSelf(userId)), relation: person.relation, budget: Math.floor(budget * SELF_SHARE) }),
     voice: voice ? voiceForPrompt(voice) : undefined,
-    theirBaseline: theirVoice ? baselineForPrompt(theirVoice) : undefined,
+    theirBaseline,
+    stands,
     history: history.text || undefined,
     historyTo: history.to,
   });

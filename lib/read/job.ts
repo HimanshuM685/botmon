@@ -9,7 +9,7 @@ import { alive } from "@/lib/trash";
 import { chatMessages, getActiveKey } from "@/lib/data";
 import { budgetFor } from "@/lib/ai/models";
 import { getModel, providerError } from "@/lib/ai/provider";
-import { afterFailure, charsFor, retryable, type Tries } from "@/lib/ai/limits";
+import { afterFailure, afterPartial, charsFor, retryable, type Tries } from "@/lib/ai/limits";
 import { seedFor } from "@/lib/ai/stream";
 import { buildChapterPrompt, buildEraPrompt, type RelationId } from "@/lib/ai/prompt";
 import { analysisSchema, chapterSchema, eraSchema, type Analysis, type ChapterResult } from "@/lib/ai/schema";
@@ -193,9 +193,10 @@ export async function step(chatId: string): Promise<{ again?: number }> {
         const now = await memoryWork(chat.id, key!);
         const parts = memoryParts(now.total);
         const done = parts - memoryParts(now.detailsLeft);
-        const waitMs = failure ? Math.max(5_000, retryable(failure)?.waitMs ?? 0) : 0;
+        const partial = failure ? afterPartial(failure) : null;
+        const waitMs = partial?.waitMs ?? 0;
         console.info(`read job: ${what}, ${now.total - now.detailsLeft}/${now.total} sittings read in ${secs()}s${failure ? `, some calls failed (${(failure as Error)?.message?.slice(0, 120)})` : ""}`, key!.provider);
-        await mine({ readNextAt: new Date(Date.now() + waitMs), readWait: failure ? (retryable(failure)?.kind === "rate" ? "rate" : "busy") : null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: done });
+        await mine({ readNextAt: new Date(Date.now() + waitMs), readWait: partial?.wait ?? null, readTries: 0, readBadTries: 0, readRateTries: 0, readParts: parts, readPartsDone: done });
         return { again: waitMs };
       };
       /** The read is done: the detail pass next if it has work, else the job ends. */

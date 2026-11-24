@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { afterFailure, backoffMs, BUSY_TRIES, charsFor, OUTPUT_TRIES, RATE_TRIES, rateLimit, retryable } from "./limits";
+import { afterFailure, afterPartial, backoffMs, BUSY_TRIES, charsFor, OUTPUT_TRIES, RATE_TRIES, rateLimit, retryable } from "./limits";
 
 it("reads an OpenAI request too big for the key's TPM", () => {
   const e = { statusCode: 429, message: "Request too large for gpt-5.5 in organization org-x on tokens per min (TPM): Limit 30000, Requested 52000. The input or output tokens must be reduced." };
@@ -73,4 +73,12 @@ it("stops at once on a key with no quota, and waits out daily caps", () => {
   const w = rateLimit({ statusCode: 429, message: "Rate limit exceeded: free-models-per-day", responseHeaders: { "X-RateLimit-Reset": String(reset) } })!.waitMs;
   expect(w).toBeGreaterThan(110_000);
   expect(w).toBeLessThanOrEqual(120_000);
+});
+
+it("a step with some work saved waits before the rest, without calling it a rate limit unless it was one", () => {
+  expect(afterPartial({ statusCode: 503, message: "This model is currently experiencing high demand" })).toEqual({ waitMs: 5_000, wait: "busy" });
+  expect(afterPartial({ statusCode: 429, message: "x", responseHeaders: { "Retry-After": "20" } })).toEqual({ waitMs: 20_000, wait: "rate" });
+  // A real answer about the request (bad key, schema): not retryable, still a short wait, never a tight loop.
+  expect(afterPartial({ statusCode: 401, message: "invalid key" })).toEqual({ waitMs: 5_000, wait: "busy" });
+  expect(afterPartial(new Error("boom")).waitMs).toBe(5_000);
 });

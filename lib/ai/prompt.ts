@@ -2,7 +2,7 @@ import type { Msg } from "@/lib/parsers/types";
 import { ADVICE_KEYS, type Analysis } from "./schema";
 import { factsForPrompt } from "@/lib/facts";
 import { activityWindows, isThinChat, toLocal, type ChatStats } from "@/lib/stats";
-import { sentSince, whereItStands } from "@/lib/suggest";
+import { sentSince } from "@/lib/suggest";
 
 export const RELATIONS = {
   CRUSH: "Crush",
@@ -125,8 +125,8 @@ type HeaderInput = {
   self?: string;
   /** How the other person usually types (lib/voice.ts baselineForPrompt): tone is read against it. */
   theirBaseline?: string;
-  /** The chat's messages, for where it stands now (lib/suggest.ts). */
-  msgs?: Msg[];
+  /** Where the chat stands now (lib/suggest.ts whereItStands). Built by the caller, so it counts toward the budget. */
+  stands?: string;
 };
 
 /** Who is who, the user's notes, memory and exact stats. Shared by reads and model updates. */
@@ -149,7 +149,7 @@ ${memory}Computed stats (exact, trust these over your own counting):
 - Average message length: user ${s.myAvgLen} chars, them ${s.theirAvgLen} chars.
 - Today is ${today}. Their messages in the last 30 days: ${w.last30}, in the 30 days before that: ${w.prev30}.
 - Their most active hours (local time, 24h): ${s.theirTopHours.join(", ") || "n/a"}.
-- Last message ${toLocal(s.lastMessageAt, p.tzOffsetMin).toISOString().slice(0, 10)} (${w.daysSinceLast} days ago) from ${s.lastSender === "me" ? "the user" : "them"}.${p.voice ? `\n\n${p.voice}` : ""}${p.theirBaseline ? `\n\n${p.theirBaseline}` : ""}${p.msgs?.length ? `\n\n<where_it_stands>\n${whereItStands(p.msgs, p.myName!, p.tzOffsetMin, p.now)}\n</where_it_stands>` : ""}`;
+- Last message ${toLocal(s.lastMessageAt, p.tzOffsetMin).toISOString().slice(0, 10)} (${w.daysSinceLast} days ago) from ${s.lastSender === "me" ? "the user" : "them"}.${p.voice ? `\n\n${p.voice}` : ""}${p.theirBaseline ? `\n\n${p.theirBaseline}` : ""}${p.stands ? `\n\n<where_it_stands>\n${p.stands}\n</where_it_stands>` : ""}`;
 }
 
 /**
@@ -231,6 +231,8 @@ export function buildPrompt(p: {
   self?: string;
   /** How the other person usually types (lib/voice.ts baselineForPrompt): tone is read against it. */
   theirBaseline?: string;
+  /** Where the chat stands now (lib/suggest.ts whereItStands). */
+  stands?: string;
   /** Long chats: every earlier period as read chapter by chapter (lib/history.ts historyForPrompt). */
   history?: string;
   /** Last message the history covers: only messages after it are sent in full. */
